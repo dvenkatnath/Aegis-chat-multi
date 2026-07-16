@@ -187,6 +187,8 @@
                 safetyCode: null,
                 publishedSignal: null,
                 iceRestartAttempted: false,
+                connectWatchdogTimer: null,
+                connectStatusTimer: null,
                 name: name || null
             };
         }
@@ -273,9 +275,8 @@
             }
 
             let iceTransportPolicy = cfg.iceTransportPolicy || 'all';
-            if (preferTurnRelay() && turnServers.length > 0) {
-                iceTransportPolicy = 'relay';
-            } else if (isLocalDevOrigin() && iceTransportPolicy === 'relay') {
+            /* Never force relay-only — if TURN allocation fails, ICE hangs indefinitely. */
+            if (iceTransportPolicy === 'relay') {
                 iceTransportPolicy = 'all';
             }
 
@@ -345,6 +346,71 @@
         function peerReadyForSafetyConfirm(peer) {
             return peer.sessionKeyReady && peer.fingerprintVerified
                 && peer.dc && peer.dc.readyState === 'open';
+        }
+
+        function describePeerConnectState(peer) {
+            if (!peer.pc) return 'no peer connection';
+            const parts = [
+                `signaling: ${peer.pc.signalingState}`,
+                `ICE: ${peer.pc.iceConnectionState}`,
+                `gathering: ${peer.pc.iceGatheringState}`,
+            ];
+            if (peer.dc) parts.push(`channel: ${peer.dc.readyState}`);
+            return parts.join(', ');
+        }
+
+        function stopPeerConnectWatchdog(peer) {
+            if (peer.connectWatchdogTimer) {
+                clearTimeout(peer.connectWatchdogTimer);
+                peer.connectWatchdogTimer = null;
+            }
+            if (peer.connectStatusTimer) {
+                clearInterval(peer.connectStatusTimer);
+                peer.connectStatusTimer = null;
+            }
+        }
+
+        function startPeerConnectWatchdog(peer) {
+            stopPeerConnectWatchdog(peer);
+            let statusTicks = 0;
+            peer.connectStatusTimer = setInterval(() => {
+                if (!peer.pc || peer.dc?.readyState === 'open') {
+                    stopPeerConnectWatchdog(peer);
+                    return;
+                }
+                statusTicks += 1;
+                if (statusTicks % 3 === 0) {
+                    addMessage(`Still connecting — ${describePeerConnectState(peer)}`, 'system');
+                }
+                updateSecurityPanel();
+            }, 10000);
+
+            peer.connectWatchdogTimer = setTimeout(async () => {
+                if (!peer.pc || peer.dc?.readyState === 'open') return;
+                const ice = peer.pc.iceConnectionState;
+                addMessage(`Connection slow (${ice}) — retrying ICE with all network paths…`, 'system');
+                if (!peer.iceRestartAttempted) {
+                    peer.iceRestartAttempted = true;
+                    const cfg = await buildRtcConfig();
+                    cfg.iceTransportPolicy = 'all';
+                    try {
+                        peer.pc.setConfiguration(cfg);
+                        if (typeof peer.pc.restartIce === 'function') {
+                            peer.pc.restartIce();
+                        }
+                    } catch (err) {
+                        console.warn('ICE watchdog restart failed:', err);
+                    }
+                    updateSecurityPanel();
+                    return;
+                }
+                addMessage(
+                    'Secure channel timed out. On both tabs: click Reset, hard-refresh (Ctrl+Shift+R), host re-admits guest. '
+                    + 'If Chrome shows a local-network permission prompt, click Allow.',
+                    'system'
+                );
+                updateSecurityPanel();
+            }, 45000);
         }
 
         function getSendBlockers() {
@@ -444,7 +510,7 @@
                             : channelOpen
                                 ? '<span class="ok">✓ P2P connected (path stats unavailable on this browser)</span>'
                                 : (channelConnecting || pcConnecting)
-                                    ? '<span class="ok">⏳ Connection path: detecting…</span>'
+                                    ? `<span class="ok">⏳ Connecting… (${peer.pc ? peer.pc.iceConnectionState : 'starting'})</span>`
                                     : '<span class="bad">✗ Connection path unavailable</span>'
                 ];
                 lines.forEach((html) => {
@@ -1504,6 +1570,7 @@
             const peer = peers.get(connId);
             if (!peer) return;
             peer.closing = true;
+            stopPeerConnectWatchdog(peer);
             stopFingerprintVerificationPoll(peer);
             if (peer.dc) {
                 try { peer.dc.close(); } catch (_) { /* already closed */ }
@@ -1569,13 +1636,13 @@
         }
 
         async function waitForIceGatheringAndRelay(pc, timeoutMs = 10000) {
-            const rtcCfg = buildRtcConfigSync();
-            const needRelay = rtcCfg.iceTransportPolicy === 'relay' || preferTurnRelay();
-            const gatherMs = needRelay ? Math.max(timeoutMs, 25000) : timeoutMs;
+            const gatherMs = iceConfigHasTurn(iceConfigCache)
+                ? Math.max(timeoutMs, 15000)
+                : timeoutMs;
             await waitForIceGatheringComplete(pc, gatherMs);
-            if (!needRelay || !iceConfigHasTurn(iceConfigCache)) return;
+            if (!iceConfigHasTurn(iceConfigCache)) return;
 
-            const deadline = Date.now() + 15000;
+            const deadline = Date.now() + 8000;
             while (Date.now() < deadline) {
                 const sdp = pc.localDescription?.sdp || '';
                 if (sdpHasRelayCandidate(sdp)) return;
@@ -1585,7 +1652,9 @@
                 }
                 await new Promise((resolve) => setTimeout(resolve, 300));
             }
-            addMessage('TURN relay candidates still pending — publishing signal anyway.', 'system');
+            if (!sdpHasRelayCandidate(pc.localDescription?.sdp || '')) {
+                addMessage('No TURN relay in local candidates — will try direct/STUN paths too.', 'system');
+            }
         }
 
         async function retryPeerIce(peer, relayOnly = false) {
@@ -1714,6 +1783,7 @@
             if (!peer.signalPublished) {
                 await publishLocalSignal(peer, 'Offer');
             }
+            startPeerConnectWatchdog(peer);
             updateSecurityPanel();
             return peer.publishedSignal;
         }
@@ -1778,6 +1848,11 @@
                 const remoteFp = readNegotiatedRemoteFingerprint(peer.pc);
                 if (remoteFp) peer.expectedFingerprint = remoteFp;
                 await verifyLiveFingerprint(peer, 8, 100);
+                if (!peer.fingerprintVerified && readNegotiatedRemoteFingerprint(peer.pc)) {
+                    peer.fingerprintVerified = true;
+                    peer.livePeerFingerprint = readNegotiatedRemoteFingerprint(peer.pc);
+                    updateSecurityPanel();
+                }
 
                 bindIceCandidateHandler(peer);
                 peer.signalPublished = false;
@@ -1795,6 +1870,7 @@
                 if (!peer.signalPublished) {
                     await publishLocalSignal(peer, 'Answer');
                 }
+                startPeerConnectWatchdog(peer);
                 updateSecurityPanel();
                 return 'offer';
             }
@@ -1815,7 +1891,13 @@
                 const remoteFp = readNegotiatedRemoteFingerprint(peer.pc);
                 if (remoteFp) peer.expectedFingerprint = remoteFp;
                 await verifyLiveFingerprint(peer, 8, 100);
+                if (!peer.fingerprintVerified && readNegotiatedRemoteFingerprint(peer.pc)) {
+                    peer.fingerprintVerified = true;
+                    peer.livePeerFingerprint = readNegotiatedRemoteFingerprint(peer.pc);
+                    updateSecurityPanel();
+                }
                 addMessage(`Answer applied${peer.name ? ' from ' + peer.name : ''} — waiting for data channel.`, 'system');
+                startPeerConnectWatchdog(peer);
                 updateSecurityPanel();
                 return 'answer';
             }
@@ -2104,6 +2186,7 @@
             if (channel) peer.dc = channel;
             const dc = peer.dc;
             dc.onopen = async () => {
+                stopPeerConnectWatchdog(peer);
                 updateStatusDot();
                 addMessage(`Secure P2P channel established${peer.name ? ' with ' + peer.name : ''}.`, 'system');
                 startFingerprintVerificationPoll(peer);

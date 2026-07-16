@@ -396,10 +396,9 @@ app.get('/health', (_req, res) => {
 });
 
 app.get('/api/ice-config', (_req, res) => {
-  const hasTurn = Boolean(TURN_SECRET || (TURN_USERNAME && TURN_CREDENTIAL));
   res.json({
     iceServers: buildIceServers(),
-    iceTransportPolicy: hasTurn ? 'relay' : 'all'
+    iceTransportPolicy: 'all'
   });
 });
 
