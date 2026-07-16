@@ -8,15 +8,43 @@ Single-service deploy: Node keyserver serves the static app (`dist/`) plus `/api
 - GitHub repo: `dvenkatnath/Aegis-chat-multi`
 - Authenticated CLI: `railway login`
 
-## First deploy
+## Get your public link
+
+Railway does **not** assign a URL automatically. After the first successful deploy:
+
+### Option A — Dashboard (easiest)
+
+1. Open https://railway.com/dashboard → **Aegis-chat-multi**
+2. Click your **service** (the one connected to GitHub)
+3. Go to **Settings** → **Networking** → **Public Networking**
+4. Click **Generate Domain**
+5. Copy the `https://something.up.railway.app` URL
+
+### Option B — CLI
 
 ```bash
 cd /path/to/Aegis-chat-multi
-railway link --project Aegis-chat-multi
-railway up --detach -m "Deploy Aegis chat multi-guest build"
+railway login
+./scripts/railway-get-link.sh
 ```
 
-## Recommended variables
+### After you have the domain
+
+In Railway → **Variables**, set:
+
+| Variable | Value |
+|----------|-------|
+| `CORS_ORIGIN` | `https://${{RAILWAY_PUBLIC_DOMAIN}}` |
+| `NODE_ENV` | `production` |
+
+Redeploy (or wait for auto-redeploy). Then open your `https://....up.railway.app` link.
+
+Verify:
+
+```bash
+curl -s https://YOUR-DOMAIN.up.railway.app/health
+```
+
 
 | Variable | Value |
 |----------|-------|
