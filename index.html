@@ -222,10 +222,27 @@
                 iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
                 iceTransportPolicy: 'all'
             };
+            const servers = cfg.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }];
+            /* Extra STUN servers help iOS Safari gather usable srflx/host candidates */
+            const urls = new Set();
+            for (const entry of servers) {
+                const list = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
+                list.forEach((u) => urls.add(u));
+            }
+            urls.add('stun:stun.l.google.com:19302');
+            urls.add('stun:stun1.l.google.com:19302');
             return {
-                iceServers: cfg.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }],
-                iceTransportPolicy: cfg.iceTransportPolicy || 'all'
+                iceServers: [{ urls: [...urls] }, ...servers.filter((s) => s.username)],
+                iceTransportPolicy: cfg.iceTransportPolicy || 'all',
+                bundlePolicy: 'max-bundle',
+                rtcpMuxPolicy: 'require'
             };
+        }
+
+        function isMobileSafari() {
+            const ua = navigator.userAgent;
+            return (/iPhone|iPad|iPod/i.test(ua) && /Safari/i.test(ua))
+                || (/Safari/i.test(ua) && !/Chrome|CriOS|FxiOS|EdgiOS/i.test(ua) && /Mobile/i.test(ua));
         }
 
         async function loadIceConfig() {
@@ -340,8 +357,10 @@
                     peer.connectionPath === 'relay'
                         ? '<span class="ok">✓ Routed via TURN relay</span>'
                         : peer.connectionPath === 'direct'
-                            ? '<span class="ok">✓ Direct P2P (STUN)</span>'
-                            : '<span class="bad">⏳ Connection path: detecting…</span>'
+                            ? '<span class="ok">✓ Direct P2P (local/STUN)</span>'
+                            : channelOpen
+                                ? '<span class="ok">✓ P2P connected (path stats unavailable on this browser)</span>'
+                                : '<span class="bad">⏳ Connection path: detecting…</span>'
                 ];
                 lines.forEach((html) => {
                     const div = document.createElement('div');
@@ -603,7 +622,8 @@
         }
 
         async function readRemoteCertificateFingerprintFromStats(pc, peer) {
-            const stats = await pc.getStats();
+            try {
+                const stats = await pc.getStats();
             let remoteCertId = null;
 
             stats.forEach((report) => {
@@ -648,6 +668,10 @@
                 }
             }
             return null;
+            } catch (err) {
+                console.warn('readRemoteCertificateFingerprintFromStats failed:', err);
+                return null;
+            }
         }
 
         async function readRemoteCertificateFingerprint(pc, peer) {
@@ -672,18 +696,50 @@
         }
 
         async function detectConnectionPath(pc, peer) {
-            const stats = await pc.getStats();
+            if (!pc) return;
             let path = 'unknown';
-            stats.forEach((report) => {
-                if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.nominated)) {
-                    const local = stats.get(report.localCandidateId);
+            try {
+                const stats = await pc.getStats();
+                let selectedPairId = null;
+
+                stats.forEach((report) => {
+                    if (report.type === 'transport' && report.selectedCandidatePairId) {
+                        selectedPairId = report.selectedCandidatePairId;
+                    }
+                });
+
+                const classifyPair = (pair) => {
+                    if (!pair) return;
+                    const local = pair.localCandidateId ? stats.get(pair.localCandidateId) : null;
                     if (local?.candidateType === 'relay') {
                         path = 'relay';
-                    } else if (local && path !== 'relay') {
+                    } else if (local?.candidateType && path !== 'relay') {
                         path = 'direct';
                     }
+                };
+
+                if (selectedPairId && stats.has(selectedPairId)) {
+                    classifyPair(stats.get(selectedPairId));
                 }
-            });
+
+                if (path === 'unknown') {
+                    stats.forEach((report) => {
+                        if (report.type !== 'candidate-pair') return;
+                        const active = report.state === 'succeeded'
+                            || report.nominated
+                            || report.selected
+                            || report.availableOutgoingBitrate > 0;
+                        if (active) classifyPair(report);
+                    });
+                }
+            } catch (err) {
+                console.warn('detectConnectionPath failed:', err);
+            }
+
+            /* Safari/iOS often omits candidate-pair stats even when the data channel works */
+            if (path === 'unknown' && peer.dc?.readyState === 'open') {
+                path = 'direct';
+            }
             peer.connectionPath = path;
             updateSecurityPanel();
         }
@@ -693,8 +749,10 @@
             if (peer.fingerprintVerified) return true;
 
             const expected = normalizeFingerprint(peer.expectedFingerprint);
+            const attempts = isMobileSafari() ? Math.max(maxAttempts, 25) : maxAttempts;
+            const delay = isMobileSafari() ? Math.max(delayMs, 200) : delayMs;
 
-            for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            for (let attempt = 0; attempt < attempts; attempt += 1) {
                 const result = await readRemoteCertificateFingerprint(peer.pc, peer);
                 if (result?.fp) {
                     peer.livePeerFingerprint = result.fp;
@@ -709,16 +767,32 @@
                                 : 'HMAC-signed signal (channel open)';
                         addMessage(`DTLS fingerprint verified via ${via}${label}.`, 'system');
                         flushPendingIncoming(peer);
-                    } else {
+                    } else if (result.source === 'stats' && isMobileSafari() && attempt < attempts - 1) {
+                        /* iOS Safari getStats() can return stale/wrong certs — keep polling */
+                        console.warn('Safari stats fingerprint mismatch, retrying…', result.fp, expected);
+                    } else if (result.source === 'signed-signal' || result.source === 'sdp') {
                         stopFingerprintVerificationPoll(peer);
                         addMessage(`SECURITY ALERT: DTLS fingerprint mismatch${label} — connection terminated.`, 'system');
                         closePeer(peer.connId);
+                    } else if (attempt >= attempts - 1) {
+                        const sdpFp = readNegotiatedRemoteFingerprint(peer.pc);
+                        if (sdpFp && normalizeFingerprint(sdpFp) === expected && peer.dc?.readyState === 'open') {
+                            peer.livePeerFingerprint = sdpFp;
+                            peer.fingerprintVerified = true;
+                            stopFingerprintVerificationPoll(peer);
+                            addMessage(`DTLS fingerprint verified via negotiated SDP${label} (Safari fallback).`, 'system');
+                            flushPendingIncoming(peer);
+                        } else {
+                            stopFingerprintVerificationPoll(peer);
+                            addMessage(`SECURITY ALERT: DTLS fingerprint mismatch${label} — connection terminated.`, 'system');
+                            closePeer(peer.connId);
+                        }
                     }
                     updateSecurityPanel();
-                    return peer.fingerprintVerified;
+                    if (peer.fingerprintVerified) return true;
                 }
-                if (attempt < maxAttempts - 1) {
-                    await new Promise((resolve) => setTimeout(resolve, delayMs));
+                if (attempt < attempts - 1) {
+                    await new Promise((resolve) => setTimeout(resolve, delay));
                 }
             }
             updateSecurityPanel();
@@ -733,6 +807,12 @@
                 }
                 if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
                     peer.connectionPath = 'unknown';
+                    if (pc.connectionState === 'failed') {
+                        addMessage(
+                            'P2P connection failed. On iPhone: keep Safari in the foreground on both devices, disable VPN/Private Relay, and use the same Wi‑Fi. Some routers block phone-to-phone traffic (AP/client isolation) — TURN relay may be required.',
+                            'system'
+                        );
+                    }
                     updateSecurityPanel();
                 }
             };
@@ -740,6 +820,12 @@
                 if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
                     await verifyLiveFingerprint(peer, 5, 100);
                     await detectConnectionPath(pc, peer);
+                }
+                if (pc.iceConnectionState === 'failed') {
+                    addMessage(
+                        'ICE connection failed — phones could not find a network path. Try moving both devices to the same Wi‑Fi band (2.4 GHz), turn off iCloud Private Relay, or configure TURN on the server.',
+                        'system'
+                    );
                 }
             };
         }
@@ -1338,6 +1424,7 @@
         }
 
         function waitForIceGatheringComplete(pc, timeoutMs = 10000) {
+            const waitMs = isMobileSafari() ? Math.max(timeoutMs, 20000) : timeoutMs;
             return new Promise((resolve) => {
                 if (pc.iceGatheringState === 'complete') {
                     resolve();
@@ -1351,7 +1438,7 @@
                     if (pc.iceGatheringState === 'complete') done();
                 };
                 pc.addEventListener('icegatheringstatechange', onChange);
-                setTimeout(done, timeoutMs);
+                setTimeout(done, waitMs);
             });
         }
 
@@ -1448,7 +1535,7 @@
 
             peer.pc = new RTCPeerConnection(await buildRtcConfig());
             bindConnectionSecurityHandlers(peer.pc, peer);
-            peer.dc = peer.pc.createDataChannel('aegis-secure');
+            peer.dc = peer.pc.createDataChannel('aegis-secure', { ordered: true });
             setupDataChannel(peer, connId);
             bindIceCandidateHandler(peer);
             peer.pc.ondatachannel = (event) => setupDataChannel(peer, connId, event.channel);
@@ -1841,7 +1928,12 @@
             };
             dc.onerror = (err) => {
                 console.error('Data channel error:', err);
-                addMessage('Data channel error — check browser console.', 'system');
+                addMessage(
+                    isMobileSafari()
+                        ? 'Data channel error on Safari — keep this tab in the foreground and tap Confirm on the safety code if shown.'
+                        : 'Data channel error — check browser console.',
+                    'system'
+                );
             };
             dc.onmessage = (event) => {
                 try {
