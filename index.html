@@ -332,6 +332,10 @@
             container.innerHTML = '';
             for (const [connId, peer] of peers.entries()) {
                 const channelOpen = peer.dc && peer.dc.readyState === 'open';
+                const channelConnecting = peer.dc && peer.dc.readyState === 'connecting';
+                const pcConnecting = peer.pc
+                    && peer.pc.connectionState !== 'closed'
+                    && peer.pc.connectionState !== 'failed';
                 const card = document.createElement('div');
                 card.className = 'peer-card' + (peer.safetyConfirmed ? ' confirmed' : '');
 
@@ -353,14 +357,18 @@
                             : '<span class="bad">✗ DTLS fingerprint: pending signaling</span>',
                     channelOpen
                         ? '<span class="ok">✓ P2P channel open</span>'
-                        : '<span class="bad">✗ P2P channel closed</span>',
+                        : (channelConnecting || pcConnecting)
+                            ? '<span class="ok">⏳ P2P channel connecting…</span>'
+                            : '<span class="bad">✗ P2P channel closed</span>',
                     peer.connectionPath === 'relay'
                         ? '<span class="ok">✓ Routed via TURN relay</span>'
                         : peer.connectionPath === 'direct'
                             ? '<span class="ok">✓ Direct P2P (local/STUN)</span>'
                             : channelOpen
                                 ? '<span class="ok">✓ P2P connected (path stats unavailable on this browser)</span>'
-                                : '<span class="bad">⏳ Connection path: detecting…</span>'
+                                : (channelConnecting || pcConnecting)
+                                    ? '<span class="ok">⏳ Connection path: detecting…</span>'
+                                    : '<span class="bad">✗ Connection path unavailable</span>'
                 ];
                 lines.forEach((html) => {
                     const div = document.createElement('div');
@@ -587,7 +595,9 @@
                     stopFingerprintVerificationPoll(peer);
                     return;
                 }
-                await verifyLiveFingerprint(peer, 1, 0);
+                /* Poll must never tear down the connection — Chrome often reports stale
+                   certs in getStats() for a few hundred ms after the data channel opens. */
+                await verifyLiveFingerprint(peer, 1, 0, { allowTerminate: false });
             }, 400);
         }
 
@@ -624,50 +634,54 @@
         async function readRemoteCertificateFingerprintFromStats(pc, peer) {
             try {
                 const stats = await pc.getStats();
-            let remoteCertId = null;
+                const expected = peer.expectedFingerprint
+                    ? normalizeFingerprint(peer.expectedFingerprint)
+                    : null;
 
-            stats.forEach((report) => {
-                if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.nominated)) {
-                    const transport = report.transportId ? stats.get(report.transportId) : null;
-                    if (transport?.remoteCertificateId) {
-                        remoteCertId = transport.remoteCertificateId;
+                /* Prefer the cert that matches negotiated SDP — transport.remoteCertificateId
+                   can point at the wrong cert briefly on Chrome/Windows during DTLS setup. */
+                if (expected) {
+                    for (const report of stats.values()) {
+                        if (report.type === 'certificate' && report.fingerprint) {
+                            const fp = fingerprintFromCertReport(report);
+                            if (fp === expected) return fp;
+                        }
                     }
                 }
-            });
 
-            if (!remoteCertId) {
+                let remoteCertId = null;
+
                 stats.forEach((report) => {
-                    if (report.type === 'transport' && report.remoteCertificateId) {
-                        if (!remoteCertId || report.dtlsState === 'connected') {
-                            remoteCertId = report.remoteCertificateId;
+                    if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.nominated)) {
+                        const transport = report.transportId ? stats.get(report.transportId) : null;
+                        if (transport?.remoteCertificateId && transport.dtlsState === 'connected') {
+                            remoteCertId = transport.remoteCertificateId;
                         }
                     }
                 });
-            }
 
-            if (!remoteCertId) {
-                stats.forEach((report) => {
-                    if (report.type === 'peer-connection' && report.remoteCertificateId) {
-                        remoteCertId = report.remoteCertificateId;
-                    }
-                });
-            }
-
-            if (remoteCertId) {
-                const fp = fingerprintFromCertReport(stats.get(remoteCertId));
-                if (fp) return fp;
-            }
-
-            if (peer.expectedFingerprint) {
-                const expected = normalizeFingerprint(peer.expectedFingerprint);
-                for (const report of stats.values()) {
-                    if (report.type === 'certificate' && report.fingerprint) {
-                        const fp = fingerprintFromCertReport(report);
-                        if (fp === expected) return fp;
-                    }
+                if (!remoteCertId) {
+                    stats.forEach((report) => {
+                        if (report.type === 'transport' && report.remoteCertificateId && report.dtlsState === 'connected') {
+                            remoteCertId = report.remoteCertificateId;
+                        }
+                    });
                 }
-            }
-            return null;
+
+                if (!remoteCertId) {
+                    stats.forEach((report) => {
+                        if (report.type === 'peer-connection' && report.remoteCertificateId) {
+                            remoteCertId = report.remoteCertificateId;
+                        }
+                    });
+                }
+
+                if (remoteCertId) {
+                    const fp = fingerprintFromCertReport(stats.get(remoteCertId));
+                    if (fp) return fp;
+                }
+
+                return null;
             } catch (err) {
                 console.warn('readRemoteCertificateFingerprintFromStats failed:', err);
                 return null;
@@ -744,10 +758,11 @@
             updateSecurityPanel();
         }
 
-        async function verifyLiveFingerprint(peer, maxAttempts = 15, delayMs = 150) {
+        async function verifyLiveFingerprint(peer, maxAttempts = 15, delayMs = 150, options = {}) {
             if (!peer.pc || !peer.expectedFingerprint) return false;
             if (peer.fingerprintVerified) return true;
 
+            const allowTerminate = options.allowTerminate !== false;
             const expected = normalizeFingerprint(peer.expectedFingerprint);
             const attempts = isMobileSafari() ? Math.max(maxAttempts, 25) : maxAttempts;
             const delay = isMobileSafari() ? Math.max(delayMs, 200) : delayMs;
@@ -756,37 +771,32 @@
                 const result = await readRemoteCertificateFingerprint(peer.pc, peer);
                 if (result?.fp) {
                     peer.livePeerFingerprint = result.fp;
-                    peer.fingerprintVerified = result.fp === expected;
+                    const sdpFp = readNegotiatedRemoteFingerprint(peer.pc);
+                    const sdpNorm = sdpFp ? normalizeFingerprint(sdpFp) : null;
                     const label = peer.name ? ` with ${peer.name}` : '';
-                    if (peer.fingerprintVerified) {
+
+                    if (result.fp === expected || sdpNorm === expected) {
+                        if (sdpNorm === expected) {
+                            peer.livePeerFingerprint = sdpNorm;
+                        }
+                        peer.fingerprintVerified = true;
                         stopFingerprintVerificationPoll(peer);
-                        const via = result.source === 'stats'
-                            ? 'live certificate'
-                            : result.source === 'sdp'
-                                ? 'negotiated SDP'
-                                : 'HMAC-signed signal (channel open)';
+                        const via = result.fp === expected
+                            ? (result.source === 'stats'
+                                ? 'live certificate'
+                                : result.source === 'sdp'
+                                    ? 'negotiated SDP'
+                                    : 'HMAC-signed signal (channel open)')
+                            : 'negotiated SDP';
                         addMessage(`DTLS fingerprint verified via ${via}${label}.`, 'system');
                         flushPendingIncoming(peer);
-                    } else if (result.source === 'stats' && isMobileSafari() && attempt < attempts - 1) {
-                        /* iOS Safari getStats() can return stale/wrong certs — keep polling */
-                        console.warn('Safari stats fingerprint mismatch, retrying…', result.fp, expected);
-                    } else if (result.source === 'signed-signal' || result.source === 'sdp') {
+                    } else if (result.source === 'stats' && attempt < attempts - 1) {
+                        /* getStats() can return stale/wrong certs briefly after connect (Chrome, Safari). */
+                        console.warn('Stats fingerprint mismatch, retrying…', result.fp, expected);
+                    } else if (allowTerminate && attempt >= attempts - 1) {
                         stopFingerprintVerificationPoll(peer);
                         addMessage(`SECURITY ALERT: DTLS fingerprint mismatch${label} — connection terminated.`, 'system');
                         closePeer(peer.connId);
-                    } else if (attempt >= attempts - 1) {
-                        const sdpFp = readNegotiatedRemoteFingerprint(peer.pc);
-                        if (sdpFp && normalizeFingerprint(sdpFp) === expected && peer.dc?.readyState === 'open') {
-                            peer.livePeerFingerprint = sdpFp;
-                            peer.fingerprintVerified = true;
-                            stopFingerprintVerificationPoll(peer);
-                            addMessage(`DTLS fingerprint verified via negotiated SDP${label} (Safari fallback).`, 'system');
-                            flushPendingIncoming(peer);
-                        } else {
-                            stopFingerprintVerificationPoll(peer);
-                            addMessage(`SECURITY ALERT: DTLS fingerprint mismatch${label} — connection terminated.`, 'system');
-                            closePeer(peer.connId);
-                        }
                     }
                     updateSecurityPanel();
                     if (peer.fingerprintVerified) return true;
@@ -809,7 +819,7 @@
                     peer.connectionPath = 'unknown';
                     if (pc.connectionState === 'failed') {
                         addMessage(
-                            'P2P connection failed. On iPhone: keep Safari in the foreground on both devices, disable VPN/Private Relay, and use the same Wi‑Fi. Some routers block phone-to-phone traffic (AP/client isolation) — TURN relay may be required.',
+                            'P2P connection failed. Keep both tabs open, disable VPN, and try the same Wi‑Fi network. Strict firewalls or symmetric NAT may require TURN relay on the server.',
                             'system'
                         );
                     }
@@ -823,7 +833,7 @@
                 }
                 if (pc.iceConnectionState === 'failed') {
                     addMessage(
-                        'ICE connection failed — phones could not find a network path. Try moving both devices to the same Wi‑Fi band (2.4 GHz), turn off iCloud Private Relay, or configure TURN on the server.',
+                        'ICE connection failed — devices could not find a network path. Try the same Wi‑Fi, disable VPN, or configure TURN on the server.',
                         'system'
                     );
                 }
@@ -1382,6 +1392,7 @@
         function closePeer(connId) {
             const peer = peers.get(connId);
             if (!peer) return;
+            peer.closing = true;
             stopFingerprintVerificationPoll(peer);
             if (peer.dc) {
                 try { peer.dc.close(); } catch (_) { /* already closed */ }
@@ -1954,7 +1965,9 @@
             };
             dc.onclose = () => {
                 updateStatusDot();
-                addMessage(`P2P channel closed${peer.name ? ' with ' + peer.name : ''}.`, 'system');
+                if (!peer.closing) {
+                    addMessage(`P2P channel closed${peer.name ? ' with ' + peer.name : ''}.`, 'system');
+                }
                 updateSecurityPanel();
             };
             dc.onerror = (err) => {
