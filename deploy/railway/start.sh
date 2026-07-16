@@ -25,4 +25,13 @@ if [ -z "${LOG_SECRET:-}" ] || [ "${#LOG_SECRET}" -lt 32 ]; then
   export LOG_SECRET="$(openssl rand -hex 32)"
 fi
 
+# Railway has no coturn sidecar — use Metered Open Relay (free tier) when TURN is unset.
+# Override with your own TURN_SECRET + TURN_HOST for self-hosted coturn.
+if [ -z "${TURN_SECRET:-}" ] && [ -z "${TURN_USERNAME:-}" ]; then
+  export TURN_SECRET="openrelayprojectsecret"
+  export TURN_HOST="staticauth.openrelay.metered.ca"
+  export TURN_PORT="80"
+  echo "INFO: Using Metered Open Relay TURN (staticauth.openrelay.metered.ca). Set TURN_SECRET/TURN_HOST to override."
+fi
+
 exec node keyserver.js

@@ -84,8 +84,11 @@ curl -s https://YOUR-DOMAIN.up.railway.app/health
 | `NODE_ENV` | `production` |
 | `CORS_ORIGIN` | `https://${{RAILWAY_PUBLIC_DOMAIN}}` (or your custom domain) |
 | `LOG_SECRET` | `openssl rand -hex 32` |
-| `TURN_SECRET` | `openssl rand -hex 32` (optional; STUN-only if unset) |
-| `TURN_PUBLIC_HOST` | Your public hostname (optional) |
+| `TURN_SECRET` | coturn `static-auth-secret`, or `openrelayprojectsecret` for [Open Relay](https://www.metered.ca/tools/openrelay/) |
+| `TURN_HOST` | e.g. `staticauth.openrelay.metered.ca` (Railway default via `start.sh`) |
+| `TURN_PORT` | `80` or `3478` depending on provider |
+| `TURN_USERNAME` / `TURN_CREDENTIAL` | Optional static creds instead of HMAC (Metered dashboard) |
+| `TURN_PUBLIC_HOST` | Hostname for static creds when different from `TURN_HOST` |
 
 `start.sh` auto-sets `CORS_ORIGIN` from `RAILWAY_PUBLIC_DOMAIN` when omitted.
 
@@ -95,5 +98,5 @@ Attach a Railway volume at `/app/data` so `keys.json` survives redeploys.
 
 ## Notes
 
-- TURN/coturn from `deploy/docker-compose.yml` is **not** included — Railway does not support host-network coturn. Use STUN via `/api/ice-config`, or add an external TURN service later.
+- TURN/coturn from `deploy/docker-compose.yml` is **not** included on Railway. **`start.sh` defaults to Metered Open Relay** (`staticauth.openrelay.metered.ca`) so ICE can traverse strict NAT/firewalls. Override with your own TURN env vars for production.
 - Health check: `GET /health`

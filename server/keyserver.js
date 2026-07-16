@@ -60,6 +60,8 @@ const LOG_FILE    = path.join(DATA_DIR, 'transparency.log.jsonl');
 const TURN_SECRET      = process.env.TURN_SECRET || '';
 const TURN_HOST        = process.env.TURN_HOST   || 'turn';
 const TURN_PORT        = process.env.TURN_PORT   || '3478';
+const TURN_USERNAME    = process.env.TURN_USERNAME || '';
+const TURN_CREDENTIAL  = process.env.TURN_CREDENTIAL || '';
 const LOG_SECRET       = process.env.LOG_SECRET  || crypto.randomBytes(32).toString('hex');
 const STUN_URL         = process.env.STUN_URL    || 'stun:stun.l.google.com:19302';
 const CORS_ORIGIN      = process.env.CORS_ORIGIN || '';
@@ -166,6 +168,56 @@ function makeTurnCredentials() {
     .update(username)
     .digest('base64');
   return { username, credential, ttl };
+}
+
+function buildTurnUrls(host, port) {
+  const urls = new Set([
+    `turn:${host}:${port}?transport=udp`,
+    `turn:${host}:${port}?transport=tcp`,
+  ]);
+  if (port !== '443') {
+    urls.add(`turn:${host}:443?transport=tcp`);
+    urls.add(`turns:${host}:443?transport=tcp`);
+  }
+  if (port !== '80') {
+    urls.add(`turn:${host}:80?transport=udp`);
+    urls.add(`turn:${host}:80?transport=tcp`);
+  }
+  return [...urls];
+}
+
+function buildIceServers() {
+  const stunUrls = new Set([
+    STUN_URL,
+    'stun:stun.l.google.com:19302',
+    'stun:stun1.l.google.com:19302',
+  ]);
+  if (TURN_HOST.includes('openrelay') || TURN_HOST.includes('metered')) {
+    stunUrls.add('stun:stun.relay.metered.ca:80');
+  }
+
+  const iceServers = [{ urls: [...stunUrls] }];
+
+  const turn = makeTurnCredentials();
+  if (turn) {
+    iceServers.push({
+      urls: buildTurnUrls(TURN_HOST, TURN_PORT),
+      username: turn.username,
+      credential: turn.credential,
+    });
+    return iceServers;
+  }
+
+  if (TURN_USERNAME && TURN_CREDENTIAL) {
+    const host = process.env.TURN_PUBLIC_HOST || TURN_HOST;
+    iceServers.push({
+      urls: buildTurnUrls(host, TURN_PORT),
+      username: TURN_USERNAME,
+      credential: TURN_CREDENTIAL,
+    });
+  }
+
+  return iceServers;
 }
 
 /* ---------- Express app ---------- */
@@ -344,19 +396,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.get('/api/ice-config', (_req, res) => {
-  const iceServers = [{ urls: STUN_URL }];
-  const turn = makeTurnCredentials();
-  if (turn) {
-    iceServers.push({
-      urls: [
-        `turn:${TURN_HOST}:${TURN_PORT}?transport=udp`,
-        `turn:${TURN_HOST}:${TURN_PORT}?transport=tcp`
-      ],
-      username: turn.username,
-      credential: turn.credential
-    });
-  }
-  res.json({ iceServers, iceTransportPolicy: 'all' });
+  res.json({ iceServers: buildIceServers(), iceTransportPolicy: 'all' });
 });
 
 app.post('/api/v1/keys', rateLimit, (req, res) => {
@@ -641,7 +681,11 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  CORS_ORIGIN : ${CORS_ORIGIN || '* (dev mode)'}`);
   console.log(`  NODE_ENV    : ${NODE_ENV}`);
   console.log(`  WS relay    : ws://<host>:${PORT}/ws  (waiting room + handshake automation)`);
-  if (!TURN_SECRET) {
-    console.warn('  WARNING: TURN_SECRET not set — TURN relay credentials unavailable.');
+  if (!TURN_SECRET && !TURN_USERNAME) {
+    console.warn('  WARNING: TURN not configured — STUN-only ICE (strict NAT / firewalls may fail).');
+  } else if (TURN_SECRET) {
+    console.log(`  TURN relay  : ${TURN_HOST}:${TURN_PORT} (HMAC credentials)`);
+  } else {
+    console.log(`  TURN relay  : ${TURN_HOST}:${TURN_PORT} (static credentials)`);
   }
 });
