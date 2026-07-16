@@ -396,7 +396,11 @@ app.get('/health', (_req, res) => {
 });
 
 app.get('/api/ice-config', (_req, res) => {
-  res.json({ iceServers: buildIceServers(), iceTransportPolicy: 'all' });
+  const hasTurn = Boolean(TURN_SECRET || (TURN_USERNAME && TURN_CREDENTIAL));
+  res.json({
+    iceServers: buildIceServers(),
+    iceTransportPolicy: hasTurn ? 'relay' : 'all'
+  });
 });
 
 app.post('/api/v1/keys', rateLimit, (req, res) => {
