@@ -73,6 +73,7 @@ const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 
 /* ---------- waiting-room / signaling relay configuration ---------- */
 const ROOM_TTL_MS        = 24 * 60 * 60 * 1000; /* matches frontend INVITE_TTL_MS */
+const HOST_ABSENT_TTL_MS = 30 * 60 * 1000;       /* keep room after host WS drop (mobile Safari) */
 const MAX_WAITING_GUESTS = 8;                    /* per room, before admission */
 const MAX_ACTIVE_GUESTS  = 5;                    /* simultaneously admitted, host-hub star topology */
 const WS_MAX_MSG_BYTES   = 64 * 1024;            /* matches express.json limit */
@@ -251,11 +252,35 @@ function newConnId() {
   return crypto.randomBytes(9).toString('base64url');
 }
 
+function ensureRoom(inviteId) {
+  let room = rooms.get(inviteId);
+  if (!room) {
+    room = {
+      hostWs: null,
+      createdAt: Date.now(),
+      hostDisconnectedAt: null,
+      guests: new Map(),
+      admittedConnIds: new Set()
+    };
+    rooms.set(inviteId, room);
+  }
+  return room;
+}
+
+function hostIsOnline(room) {
+  return !!(room.hostWs && room.hostWs.readyState === room.hostWs.OPEN);
+}
+
 function pruneStaleRooms() {
   const cutoff = Date.now() - ROOM_TTL_MS;
+  const hostAbsentCutoff = Date.now() - HOST_ABSENT_TTL_MS;
   for (const [inviteId, room] of rooms.entries()) {
     if (room.createdAt < cutoff) {
       closeRoom(inviteId, 'expired');
+      continue;
+    }
+    if (!hostIsOnline(room) && room.hostDisconnectedAt && room.hostDisconnectedAt < hostAbsentCutoff) {
+      closeRoom(inviteId, 'host away too long');
     }
   }
 }
@@ -471,15 +496,12 @@ wss.on('connection', (ws, req) => {
         if (!UUID_V4_RE.test(inviteId || '')) {
           return safeSend(ws, JSON.stringify({ type: 'error', message: 'invalid inviteId' }));
         }
-        let room = rooms.get(inviteId);
-        if (room && room.hostWs && room.hostWs.readyState === ws.OPEN) {
+        const room = ensureRoom(inviteId);
+        if (hostIsOnline(room) && room.hostWs !== ws) {
           return safeSend(ws, JSON.stringify({ type: 'error', message: 'room already has a host' }));
         }
-        if (!room) {
-          room = { hostWs: null, createdAt: Date.now(), guests: new Map(), admittedConnIds: new Set() };
-          rooms.set(inviteId, room);
-        }
         room.hostWs = ws;
+        room.hostDisconnectedAt = null;
         boundInviteId = inviteId;
         boundRole = 'host';
         safeSend(ws, JSON.stringify({ type: 'registered', role: 'host' }));
@@ -487,6 +509,7 @@ wss.on('connection', (ws, req) => {
         for (const [connId, guest] of room.guests.entries()) {
           if (!guest.admitted) {
             safeSend(ws, JSON.stringify({ type: 'presence', connId, name: guest.name }));
+            safeSend(guest.ws, JSON.stringify({ type: 'host-back' }));
           }
         }
         break;
@@ -501,10 +524,7 @@ wss.on('connection', (ws, req) => {
         if (!cleanName) {
           return safeSend(ws, JSON.stringify({ type: 'error', message: 'name required' }));
         }
-        const room = rooms.get(inviteId);
-        if (!room) {
-          return safeSend(ws, JSON.stringify({ type: 'error', message: 'invite not found or expired' }));
-        }
+        const room = ensureRoom(inviteId);
         if (room.admittedConnIds.size >= MAX_ACTIVE_GUESTS) {
           return safeSend(ws, JSON.stringify({ type: 'error', message: `room full — maximum ${MAX_ACTIVE_GUESTS} guests already active` }));
         }
@@ -519,8 +539,19 @@ wss.on('connection', (ws, req) => {
         boundRole = 'guest';
         boundConnId = connId;
 
-        safeSend(ws, JSON.stringify({ type: 'joined', connId }));
-        safeSend(room.hostWs, JSON.stringify({ type: 'presence', connId, name: cleanName }));
+        safeSend(ws, JSON.stringify({
+          type: 'joined',
+          connId,
+          hostOnline: hostIsOnline(room)
+        }));
+        if (hostIsOnline(room)) {
+          safeSend(room.hostWs, JSON.stringify({ type: 'presence', connId, name: cleanName }));
+        } else {
+          safeSend(ws, JSON.stringify({
+            type: 'host-away',
+            message: 'Host is not online yet — ask them to open the invite link and keep Safari in the foreground.'
+          }));
+        }
         break;
       }
 
@@ -587,7 +618,15 @@ wss.on('connection', (ws, req) => {
     if (!room) return;
 
     if (boundRole === 'host') {
-      closeRoom(boundInviteId, 'host disconnected');
+      room.hostWs = null;
+      room.hostDisconnectedAt = Date.now();
+      const awayMsg = JSON.stringify({
+        type: 'host-away',
+        message: 'Host temporarily offline — reopen the invite link in Safari and keep it in the foreground.'
+      });
+      for (const guest of room.guests.values()) {
+        safeSend(guest.ws, awayMsg);
+      }
     } else if (boundRole === 'guest' && boundConnId) {
       const wasAdmitted = room.admittedConnIds.has(boundConnId);
       room.guests.delete(boundConnId);

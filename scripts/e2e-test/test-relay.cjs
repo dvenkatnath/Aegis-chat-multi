@@ -140,15 +140,14 @@ async function main() {
     ok(sawRateLimitError, 'flooding the relay with messages triggers the rate limiter');
     floodWs.close();
 
-    /* ---- Test 7: closing the host socket tears down the room ---- */
+    /* ---- Test 7: host disconnect keeps room alive for guest rejoin (mobile Safari) ---- */
     hostWs.close();
     await wait(300);
     const lateGuestWs = new WebSocket(base);
     await new Promise((res) => lateGuestWs.once('open', res));
     lateGuestWs.send(JSON.stringify({ type: 'join', inviteId: validInviteId, name: 'Late' }));
     const lateResp = await onceMessage(lateGuestWs);
-    ok(lateResp.type === 'error' && /not found|expired/i.test(lateResp.message),
-      'room is gone after host disconnects — no orphaned room left reachable');
+    ok(lateResp.type === 'joined', 'guest can still join after host disconnects — room persists');
     lateGuestWs.close();
 
     guestWs.close();

@@ -1739,12 +1739,29 @@
                 handleRelayMessage(role, msg);
             };
             relayWs.onclose = () => {
-                addMessage('Waiting-room connection closed. Manual signaling below still works.', 'system');
+                addMessage('Waiting-room connection closed. Reconnecting…', 'system');
+                if (currentInviteId && (inviteRole === 'host' || myDisplayName)) {
+                    setTimeout(() => {
+                        if (!relayWs || relayWs.readyState === WebSocket.CLOSED) {
+                            connectRelay(inviteRole);
+                        }
+                    }, 2000);
+                }
             };
             relayWs.onerror = () => {
-                addMessage('Waiting-room connection error — automated handshake unavailable. Manual signaling below still works.', 'system');
+                addMessage('Waiting-room connection error — retrying…', 'system');
             };
         }
+
+        /* iOS Safari kills background WebSockets — reconnect when app returns */
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState !== 'visible' || !currentInviteId) return;
+            if (!relayWs || relayWs.readyState === WebSocket.CLOSED || relayWs.readyState === WebSocket.CLOSING) {
+                if (inviteRole === 'host' || myDisplayName) {
+                    connectRelay(inviteRole);
+                }
+            }
+        });
 
         async function handleRelayMessage(role, msg) {
             switch (msg.type) {
@@ -1754,13 +1771,23 @@
 
                 case 'joined': {
                     myConnId = msg.connId;
-                    /* Guest creates its single peer (always the host) now,
-                       so the incoming offer has somewhere explicit to land. */
                     const hostPeer = makePeer(HOST_PEER_KEY, null);
                     peers.set(HOST_PEER_KEY, hostPeer);
-                    addMessage('Waiting for the host to admit you…', 'system');
+                    if (msg.hostOnline === false) {
+                        addMessage('Waiting for the host to open the invite link (keep Safari in the foreground on their phone)…', 'system');
+                    } else {
+                        addMessage('Waiting for the host to admit you…', 'system');
+                    }
                     break;
                 }
+
+                case 'host-away':
+                    addMessage(msg.message || 'Host temporarily offline — ask them to reopen the invite link.', 'system');
+                    break;
+
+                case 'host-back':
+                    addMessage('Host is back online — waiting for admission…', 'system');
+                    break;
 
                 case 'presence':
                     waitingGuests.set(msg.connId, msg.name);
@@ -1822,7 +1849,11 @@
                     break;
 
                 case 'error':
-                    addMessage(`Waiting room: ${msg.message}`, 'system');
+                    if (/invite not found|expired/i.test(msg.message || '')) {
+                        addMessage('Waiting room: host not online yet. Ask the host to open the invite link and keep Safari in the foreground, then tap Join again.', 'system');
+                    } else {
+                        addMessage(`Waiting room: ${msg.message}`, 'system');
+                    }
                     break;
             }
         }
