@@ -194,7 +194,11 @@
             return inviteRole === 'host' ? hostEcdhKeyPair : peer.ecdhKeyPair;
         }
         const incomingFiles = new Map();
+        const incomingMessages = new Map();
         const FILE_CHUNK_SIZE = 384;
+        /* Must stay under WASM BRIDGE_MAX_PLAIN (880) after JSON envelope overhead */
+        const TEXT_CHUNK_SIZE = 512;
+        const ENCRYPT_MAX_PLAIN = 880;
         const SIGNAL_VERSION = 3;
         const MIN_ROOM_SECRET_LEN = 32;
         const INVITE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -1060,6 +1064,9 @@
 
         function encryptMessageFor(peer, plainText) {
             ensurePeerSessionReady(peer);
+            if (Module.lengthBytesUTF8(plainText) > ENCRYPT_MAX_PLAIN) {
+                throw new Error(`Encrypted payload too large (${Module.lengthBytesUTF8(plainText)} > ${ENCRYPT_MAX_PLAIN} bytes)`);
+            }
             loadKeyIntoWasm(peer.connId, peer.sessionKeyHex);
             const len = Module.lengthBytesUTF8(plainText);
             const ptrIn = Module.allocateUTF8(plainText);
@@ -1127,6 +1134,16 @@
             if (payload.type === 'msg') {
                 addMessage(payload.data, 'received', fromLabel);
                 if (inviteRole === 'host') broadcastToOthers(peer.connId, payload);
+            } else if (payload.type === 'msg-start') {
+                incomingMessages.set(payload.id, {
+                    totalChunks: payload.totalChunks,
+                    chunks: new Array(payload.totalChunks),
+                    received: 0
+                });
+                if (inviteRole === 'host') broadcastToOthers(peer.connId, payload);
+            } else if (payload.type === 'msg-chunk') {
+                handleMsgChunk(payload, fromLabel);
+                if (inviteRole === 'host') broadcastToOthers(peer.connId, payload);
             } else if (payload.type === 'file') {
                 addFileMessage(payload.name, payload.size, payload.data);
                 if (inviteRole === 'host') broadcastToOthers(peer.connId, payload);
@@ -1171,6 +1188,65 @@
                 }
                 addFileMessage(state.name, state.size, uint8ArrayToBase64(merged));
                 incomingFiles.delete(payload.id);
+            }
+        }
+
+        function handleMsgChunk(payload, fromLabel) {
+            const state = incomingMessages.get(payload.id);
+            if (!state) {
+                throw new Error('Message chunk received without msg-start metadata.');
+            }
+            state.chunks[payload.index] = payload.data;
+            state.received += 1;
+            if (state.received === state.totalChunks) {
+                addMessage(state.chunks.join(''), 'received', fromLabel);
+                incomingMessages.delete(payload.id);
+            }
+        }
+
+        function splitTextIntoChunks(text, maxBytes) {
+            const bytes = new TextEncoder().encode(text);
+            if (bytes.length <= maxBytes) return [text];
+            const chunks = [];
+            let offset = 0;
+            while (offset < bytes.length) {
+                let end = Math.min(offset + maxBytes, bytes.length);
+                while (end > offset && end < bytes.length && (bytes[end] & 0xC0) === 0x80) {
+                    end -= 1;
+                }
+                chunks.push(new TextDecoder().decode(bytes.subarray(offset, end)));
+                offset = end;
+            }
+            return chunks;
+        }
+
+        function innerPayloadByteLength(payload) {
+            return Module.lengthBytesUTF8(JSON.stringify(payload));
+        }
+
+        function sendTextPayload(text, readyPeers) {
+            const singlePayload = { type: 'msg', data: text };
+            if (innerPayloadByteLength(singlePayload) <= ENCRYPT_MAX_PLAIN) {
+                for (const peer of readyPeers) {
+                    sendSecure(peer, singlePayload);
+                }
+                return;
+            }
+
+            const chunks = splitTextIntoChunks(text, TEXT_CHUNK_SIZE);
+            const id = crypto.randomUUID();
+            const totalChunks = chunks.length;
+            for (const peer of readyPeers) {
+                sendSecure(peer, { type: 'msg-start', id, totalChunks });
+            }
+            for (let index = 0; index < totalChunks; index += 1) {
+                const chunkPayload = { type: 'msg-chunk', id, index, data: chunks[index] };
+                if (innerPayloadByteLength(chunkPayload) > ENCRYPT_MAX_PLAIN) {
+                    throw new Error('Message chunk too large for encryption — try a shorter message.');
+                }
+                for (const peer of readyPeers) {
+                    sendSecure(peer, chunkPayload);
+                }
             }
         }
 
@@ -1242,6 +1318,7 @@
             for (const connId of [...peers.keys()]) closePeer(connId);
             hostEcdhKeyPair = null;
             incomingFiles.clear();
+            incomingMessages.clear();
             keyTransparencyOk = false;
             signalArea.value = '';
             updateSecurityPanel();
@@ -1794,20 +1871,13 @@
                 addMessage('No connected peer to send to yet.', 'system');
                 return;
             }
-            let sentToAny = false;
-            for (const peer of readyPeers) {
-                try {
-                    sendSecure(peer, { type: 'msg', data: text });
-                    sentToAny = true;
-                } catch (err) {
-                    console.error(`Send to ${peer.name || peer.connId} failed:`, err);
-                }
-            }
-            if (sentToAny) {
+            try {
+                sendTextPayload(text, readyPeers);
                 addMessage(text, 'sent');
                 msgInput.value = '';
-            } else {
-                addMessage('Send failed — no peer accepted the message.', 'system');
+            } catch (err) {
+                console.error('Send failed:', err);
+                addMessage(`Send failed: ${err.message}`, 'system');
             }
         }
 
