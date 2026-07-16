@@ -1,0 +1,16 @@
+# Copy to cloudflared.yml and customize (see docs/CUSTOM-URL.md).
+#
+# Prerequisites:
+#   cloudflared tunnel login
+#   cloudflared tunnel create aegis-chat
+#   cloudflared tunnel route dns aegis-chat aegis.YOURDOMAIN.com
+#
+# Set PUBLIC_URL in aegis-server.env, then re-run mac-server-install.sh
+
+tunnel: aegis-chat
+credentials-file: /Users/YOUR_USER/.cloudflared/TUNNEL_UUID.json
+
+ingress:
+  - hostname: aegis.YOURDOMAIN.com
+    service: http://127.0.0.1:8080
+  - service: http_status:404

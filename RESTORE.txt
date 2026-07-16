@@ -1,0 +1,31 @@
+Aegis Secure Chat — Portable Backup
+====================================
+
+Requirements
+  • Node.js 18 or newer
+  • OpenSSL (for build script SRI hashes)
+  • Emscripten (emcc) — only if you need to rebuild WASM from source
+
+Quick start (recommended)
+  1. Unzip into a folder (e.g. ~/AegisChat)
+  2. chmod +x scripts/build.sh scripts/run-local.sh
+  3. ./scripts/run-local.sh
+  4. Open http://localhost:8080
+
+Run without Emscripten (uses prebuilt dist/ in this archive)
+  1. cd server && npm install --omit=dev && cd ..
+  2. export STATIC_DIR="$(pwd)/dist" PORT=8080
+  3. cd server && node keyserver.js
+  4. Open http://localhost:8080
+
+Production deploy
+  See README.md — ./scripts/build.sh then deploy/docker compose
+
+Not included (recreated on first run)
+  • server/node_modules — run npm install in server/
+  • server/data/ — key transparency log (local dev secrets)
+
+Host/guest flow
+  Host: Create Invite → Connect Peer → copy Offer JSON
+  Guest: open invite link → paste Offer → Process Signal → copy Answer
+  Host: paste Answer → Process Signal → chat when all checks are green

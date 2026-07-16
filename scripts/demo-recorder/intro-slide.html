@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Aegis Secure Chat — Intro</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 1920px; height: 900px; overflow: hidden;
+      background: radial-gradient(ellipse at 30% 20%, #0f2847 0%, #020817 55%, #010409 100%);
+      color: #e2e8f0; font-family: 'Segoe UI', system-ui, sans-serif;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 60px 80px; text-align: center;
+    }
+    .logo-row { display: flex; align-items: center; gap: 24px; margin-bottom: 28px; }
+    .app-logo {
+      width: 120px; height: 120px; object-fit: contain; flex-shrink: 0;
+      filter: drop-shadow(0 0 18px rgba(201, 162, 39, 0.4));
+      mix-blend-mode: lighten;
+    }
+    h1 { font-size: 56px; font-weight: 700; letter-spacing: 2px; color: #fff; }
+    .tagline { font-size: 22px; color: #94a3b8; margin-top: 12px; letter-spacing: 0.5px; }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin: 40px 0 36px; max-width: 1200px; }
+    .pill {
+      padding: 10px 20px; border-radius: 999px; font-size: 15px; font-weight: 600;
+      border: 1px solid rgba(29,158,117,0.45); background: rgba(29,158,117,0.12); color: #1D9E75;
+    }
+    .pill.amber { border-color: rgba(239,159,39,0.45); background: rgba(239,159,39,0.1); color: #EF9F27; }
+    .summary {
+      max-width: 960px; font-size: 20px; line-height: 1.65; color: #cbd5e1;
+      border-top: 1px solid rgba(255,255,255,0.08); padding-top: 32px;
+    }
+    .footer { position: absolute; bottom: 36px; font-size: 14px; color: #64748b; letter-spacing: 1px; }
+  </style>
+</head>
+<body>
+  <div class="logo-row">
+    <img src="../../assets/aegis-logo.png" alt="Aegis" class="app-logo" width="120" height="120">
+    <h1>Aegis Secure Chat</h1>
+  </div>
+  <p class="tagline">Invite-only · End-to-end encrypted · Peer-to-peer</p>
+  <div class="pill-row">
+    <span class="pill">AES-256 CyberKnot (WASM)</span>
+    <span class="pill">WebRTC + DTLS</span>
+    <span class="pill">ECDH P-256 + HKDF</span>
+    <span class="pill">HMAC Signaling</span>
+    <span class="pill amber">Key Transparency</span>
+    <span class="pill amber">Auto DTLS Verify</span>
+  </div>
+  <p class="summary">
+    Zero-trust messaging for teams that need proof, not promises.<br>
+    Room secrets never touch the server. Messages encrypted before they leave the browser.
+  </p>
+  <p class="footer">PRODUCT DEMO · HOST &amp; GUEST SIDE BY SIDE</p>
+</body>
+</html>

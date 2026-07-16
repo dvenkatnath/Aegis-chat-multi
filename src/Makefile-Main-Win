@@ -1,0 +1,34 @@
+# Cross Compiler for Windows
+CC = x86_64-w64-mingw32-gcc
+
+# Compilation Flags
+CFLAGS = -Wall -Wextra -g -D_DEBUG -D_WIN32  
+
+# Static Library
+ARCHIVES = libCyberKnot.lib  
+
+# Source Files
+SRCS = Main.Kobi.Workflow2.c  
+
+# Object Files
+OBJS = $(SRCS:.c=.o)
+
+# Executable Name
+EXEC = MainWF-A.exe  
+
+# Linker Flags for Windows
+LDFLAGS = -static -static-libgcc -static-libstdc++ -lm -lmingw32 -lmsvcrt 
+
+# Build the Executable
+all: $(EXEC)
+
+$(EXEC): $(OBJS)
+	$(CC) $(CFLAGS) $(OBJS) $(ARCHIVES) -o $(EXEC) $(LDFLAGS)
+
+# Compile Source Files into Object Files
+%.o: %.c
+	$(CC) $(CFLAGS) -I./include -c $< -o $@
+
+# Clean Build Files
+clean:
+	rm -f $(OBJS) $(EXEC)

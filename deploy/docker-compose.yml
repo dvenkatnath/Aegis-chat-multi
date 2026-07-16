@@ -1,0 +1,55 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../dist:/srv/dist:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - keyserver
+
+  keyserver:
+    build:
+      context: ../server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      TURN_SECRET: ${TURN_SECRET}
+      TURN_HOST: ${TURN_PUBLIC_HOST}
+      TURN_PORT: "3478"
+      LOG_SECRET: ${LOG_SECRET}
+      STUN_URL: "stun:stun.l.google.com:19302"
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://chat.example.com}
+      NODE_ENV: ${NODE_ENV:-production}
+    volumes:
+      - keyserver_data:/app/data
+
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TURN_SECRET: ${TURN_SECRET}
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf.template:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        sed "s|\$${TURN_SECRET}|$$TURN_SECRET|g" /etc/coturn/turnserver.conf.template > /etc/coturn/turnserver.conf
+        exec turnserver -c /etc/coturn/turnserver.conf
+
+volumes:
+  caddy_data:
+  caddy_config:
+  keyserver_data:

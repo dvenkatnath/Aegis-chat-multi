@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Runtime / local data
+server/data/
+*.log
+*.log.jsonl
+
+# Secrets and local config
+.env
+deploy/.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Archives
+*.zip

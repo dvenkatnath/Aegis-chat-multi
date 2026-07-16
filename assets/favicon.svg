@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Aegis">
+  <defs>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e8c872"/>
+      <stop offset="50%" stop-color="#c9a227"/>
+      <stop offset="100%" stop-color="#9a7420"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#234a82"/>
+      <stop offset="100%" stop-color="#122a52"/>
+    </linearGradient>
+  </defs>
+  <path d="M16 1.5 27.5 5.5v9.2c0 6.8-4.8 12.8-11.5 15.3C9.3 27.5 4.5 21.5 4.5 14.7V5.5L16 1.5z" fill="url(#blue)" stroke="url(#gold)" stroke-width="1.4" stroke-linejoin="round"/>
+  <path d="M16 8.5v11.5M16 8.5c-2.2 1.8-3.6 3.2-4.2 4.2M16 8.5c2.2 1.8 3.6 3.2 4.2 4.2M16 11.2V8.5" fill="none" stroke="url(#gold)" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

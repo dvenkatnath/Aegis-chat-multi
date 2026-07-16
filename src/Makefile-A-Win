@@ -1,0 +1,25 @@
+# Cross-Compiler for Windows
+CC = x86_64-w64-mingw32-gcc
+AR = x86_64-w64-mingw32-ar  # Use the MinGW archiver
+
+# Compilation Flags
+CFLAGS = -Wall -D_WIN32
+
+# Object Files
+OBJS = aes.o Base64.o EncryptionToolsApi.o Hmac.o HighLevED.o Global2.o \
+       SHA256.o Functions3.o Pstr.o UberHighLevED.o ProcMSG.o API.o
+
+# Static Library Name (Windows .lib format)
+LIB = libCyberKnot.lib
+
+all: $(LIB)
+
+$(LIB): $(OBJS)
+	$(AR) rcs $(LIB) $(OBJS)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -I./include -c $< -o $@
+
+clean:
+	rm -f *.o
+	rm -f *.lib

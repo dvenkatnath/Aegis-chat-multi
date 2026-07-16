@@ -1,0 +1,15 @@
+{
+  "name": "aegis-demo-recorder",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "record": "node record-demo.mjs",
+    "record:split": "node record-demo.mjs --view split",
+    "record:host-only": "node record-demo.mjs --view host",
+    "intro": "node compose-intro.mjs"
+  },
+  "devDependencies": {
+    "node-edge-tts": "^1.2.10",
+    "playwright": "^1.61.1"
+  }
+}

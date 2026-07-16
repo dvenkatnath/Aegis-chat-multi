@@ -1,0 +1,17 @@
+{
+  "name": "aegis-keyserver",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Key transparency log and ICE config for Aegis Secure Chat",
+  "main": "keyserver.js",
+  "scripts": {
+    "start": "node keyserver.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}

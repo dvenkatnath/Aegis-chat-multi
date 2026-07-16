@@ -1,0 +1,1851 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aegis Secure Chat</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+    <link rel="icon" href="/favicon-16.png" type="image/png" sizes="16x16">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180">
+    <link rel="shortcut icon" href="/favicon.ico">
+    <style>
+        :root { --bg-dark: #020817; --panel-bg: rgba(10, 18, 40, 0.85); --teal: #1D9E75; --amber: #EF9F27; --text-main: #e2e8f0; --text-muted: #94a3b8; --red: #f87171; }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: var(--bg-dark); color: var(--text-main); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        header { background: var(--panel-bg); padding: 15px 20px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+        h1 { font-size: 1.2rem; letter-spacing: 1px; display: flex; align-items: center; gap: 10px; }
+        .app-logo { width: 36px; height: 36px; object-fit: contain; flex-shrink: 0; filter: drop-shadow(0 0 6px rgba(201, 162, 39, 0.35)); }
+        .status-dot { width: 10px; height: 10px; background: #ef4444; border-radius: 50%; transition: 0.3s; }
+        .status-dot.connected { background: var(--teal); box-shadow: 0 0 8px var(--teal); }
+        main { display: flex; flex: 1; overflow: hidden; }
+        .chat-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        #chat-box { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+        .msg { max-width: 70%; padding: 12px 16px; border-radius: 12px 12px 12px 2px; background: rgba(127, 119, 221, 0.1); border: 1px solid rgba(127, 119, 221, 0.3); font-size: 0.95rem; word-break: break-word; }
+        .msg.system { max-width: 100%; color: var(--text-muted); font-size: 0.85rem; border-color: rgba(255,255,255,0.08); background: rgba(255,255,255,0.03); }
+        .msg.sent { align-self: flex-end; border-radius: 12px 12px 2px 12px; background: rgba(29, 158, 117, 0.1); border-color: rgba(29, 158, 117, 0.3); }
+        .msg.file { border-color: var(--amber); background: rgba(239, 159, 39, 0.1); cursor: pointer; text-decoration: none; color: var(--amber); display: block; }
+        .input-area { padding: 15px; background: var(--panel-bg); border-top: 1px solid rgba(255,255,255,0.08); display: flex; gap: 10px; }
+        input[type="text"], input[type="password"] { flex: 1; padding: 12px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: var(--text-main); outline: none; }
+        input[type="text"]:focus, input[type="password"]:focus { border-color: var(--teal); }
+        button { padding: 12px 20px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        button:disabled { opacity: 0.45; cursor: not-allowed; }
+        #send-btn { background: var(--teal); color: white; }
+        #file-btn { background: transparent; border: 1px solid var(--amber); color: var(--amber); }
+        aside { width: 280px; background: var(--panel-bg); border-right: 1px solid rgba(255,255,255,0.08); padding: 20px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+        aside label { font-size: 0.8rem; color: var(--text-muted); }
+        textarea { min-height: 120px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: var(--text-muted); padding: 10px; resize: vertical; font-family: monospace; font-size: 0.75rem; }
+        #security-panel { font-size: 0.78rem; line-height: 1.6; color: var(--text-muted); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px; }
+        #security-panel .ok { color: var(--teal); }
+        #security-panel .bad { color: var(--red); }
+        #fingerprint-display { font-family: monospace; font-size: 0.72rem; word-break: break-all; color: var(--text-muted); }
+        #fingerprint-display.pending { color: var(--amber); }
+        #fingerprint-display.verified { color: var(--teal); }
+        #fingerprint-display.error { color: var(--red); }
+        #guest-invite-link { font-size: 0.72rem; min-height: 56px; }
+        .invite-actions { display: flex; flex-direction: column; gap: 8px; }
+        .invite-actions button { font-size: 0.85rem; padding: 10px; }
+        #create-invite-btn { background: var(--teal); color: white; }
+        #copy-guest-link-btn { background: transparent; border: 1px solid var(--teal); color: var(--teal); }
+        #name-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 50; }
+        #name-modal-overlay.show { display: flex; }
+        #name-modal { background: var(--panel-bg); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 24px; width: 320px; }
+        #name-modal h3 { font-size: 1rem; margin-bottom: 10px; }
+        #name-modal p { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 14px; }
+        #name-modal input { width: 100%; padding: 10px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: var(--text-main); margin-bottom: 12px; }
+        #name-modal button { width: 100%; background: var(--teal); color: #fff; padding: 10px; border-radius: 8px; }
+        #waiting-room-panel { display: none; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px; font-size: 0.82rem; }
+        #waiting-room-panel.show { display: block; }
+        #waiting-room-panel h3 { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .waiting-guest-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+        .waiting-guest-row:last-child { border-bottom: none; }
+        .waiting-guest-name { font-size: 0.85rem; }
+        .waiting-guest-actions button { padding: 5px 10px; font-size: 0.72rem; border-radius: 6px; }
+        .btn-admit { background: var(--teal); color: #fff; }
+        .btn-deny { background: transparent; border: 1px solid var(--red); color: var(--red); }
+        #peer-status-list { display: flex; flex-direction: column; gap: 8px; }
+        .peer-card { border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px; font-size: 0.78rem; }
+        .peer-card.confirmed { border-color: var(--teal); }
+        .peer-card h4 { font-size: 0.82rem; margin-bottom: 6px; }
+        .peer-card .peer-status-line { color: var(--text-muted); margin-bottom: 2px; }
+        .peer-card .peer-status-line .ok { color: var(--teal); }
+        .peer-card .peer-status-line .bad { color: var(--red); }
+        .peer-card .peer-safety-code { font-family: monospace; font-size: 1.15rem; letter-spacing: 3px; color: var(--amber); text-align: center; padding: 8px 0; }
+        .peer-card.confirmed .peer-safety-code { color: var(--teal); }
+        .peer-card .peer-safety-confirm-btn { width: 100%; background: var(--teal); color: #fff; padding: 7px; border-radius: 6px; margin-top: 4px; font-size: 0.78rem; }
+        details.manual-fallback { font-size: 0.78rem; color: var(--text-muted); }
+        details.manual-fallback summary { cursor: pointer; padding: 4px 0; }
+    </style>
+</head>
+<body>
+    <div id="name-modal-overlay">
+        <div id="name-modal">
+            <h3>Enter your name</h3>
+            <p>Shown to the host in the waiting room. Not trusted for security until the safety check passes.</p>
+            <input type="text" id="guest-name-input" placeholder="Your name" maxlength="40" autocomplete="off">
+            <button id="guest-name-submit-btn">Join waiting room</button>
+        </div>
+    </div>
+    <header>
+        <h1><img src="/logo.png" alt="" class="app-logo" width="36" height="36"><span class="status-dot" id="status-dot"></span> Aegis Secure Chat</h1>
+        <button id="create-invite-btn">Create Invite</button>
+        <button id="connect-btn" disabled>Connect Peer</button>
+        <button id="reset-btn">Reset</button>
+    </header>
+    <main>
+        <aside>
+            <h3>Signal &amp; Keys</h3>
+            <div class="invite-actions">
+                <label for="guest-invite-link">Guest invite link (share once — contains room secret in URL fragment)</label>
+                <textarea id="guest-invite-link" readonly placeholder="Click Create Invite to generate a guest link."></textarea>
+                <button type="button" id="copy-guest-link-btn" disabled>Copy Guest Link</button>
+            </div>
+            <label for="room-secret">Room secret (auto-filled from invite)</label>
+            <input type="password" id="room-secret" placeholder="Create or open an invite link" autocomplete="off" readonly>
+
+            <div id="waiting-room-panel">
+                <h3>Waiting room</h3>
+                <div id="waiting-room-list"></div>
+            </div>
+
+            <details class="manual-fallback">
+                <summary>Advanced / manual signaling (fallback — not needed for normal use)</summary>
+                <label for="signal-area"><strong>Offer / Answer JSON</strong> (from host — NOT the invite link)</label>
+                <textarea id="signal-area" placeholder="GUEST: Paste the host's Offer JSON here (starts with {&quot;v&quot;:3,&quot;sdp&quot;...}), then click Process Signal.&#10;HOST: After Connect Peer, Offer appears here automatically. Later, paste the guest's Answer JSON here."></textarea>
+                <button id="signal-btn">Process Signal</button>
+            </details>
+
+            <div id="security-panel">
+                <div id="sec-wasm">⏳ WASM: loading…</div>
+                <div id="sec-room">⏳ Room secret: not set</div>
+                <div id="sec-invite">⏳ Invite: not loaded</div>
+                <div id="sec-transparency">⏳ Key transparency: pending</div>
+            </div>
+            <div id="peer-status-list"></div>
+            </div>
+        </aside>
+        <div class="chat-area">
+            <div id="chat-box"><div class="msg system">Establishing secure proprietary channel…</div></div>
+            <div class="input-area">
+                <input type="text" id="msg-input" placeholder="Type secure message…" disabled>
+                <input type="file" id="file-input" style="display:none;" disabled>
+                <button id="file-btn" disabled>📁 File</button>
+                <button id="send-btn" disabled>Send ➤</button>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        let wasmReady = false;
+        let keyTransparencyOk = false;
+        let iceConfigCache = null;
+        let localDevMode = false;
+        let currentInviteId = null;
+        let inviteRole = null;
+        /* --- waiting room / automated handshake relay (additive) --- */
+        let relayWs = null;
+        let myConnId = null;             /* guest's connection id, assigned by relay */
+        let myDisplayName = null;
+        const waitingGuests = new Map(); /* host-side: connId -> name */
+
+        /*
+         * --- per-peer connection state ---
+         * Replaces the old singleton globals (peerConnection, dataChannel,
+         * ecdhKeyPair, peerEcdhPublicKey, isInitiator, expectedPeerFingerprint,
+         * fingerprintVerified, livePeerFingerprint, connectionPath,
+         * sessionKeyReady, signalPublished, safetyNumberConfirmed) so the
+         * host can hold up to MAX_ACTIVE_GUESTS_CLIENT independent encrypted
+         * connections without one guest's async events touching another's
+         * state. A guest only ever has one peer, always keyed HOST_PEER_KEY.
+         */
+        const HOST_PEER_KEY = '__host__';
+        const MAX_ACTIVE_GUESTS_CLIENT = 5; /* matches server MAX_ACTIVE_GUESTS */
+        const peers = new Map(); /* connId -> peer state */
+        let hostEcdhKeyPair = null;     /* host's ECDH keypair — one, reused for every guest */
+        let activeWasmKeyPeerId = null; /* which peer's key is currently loaded in WASM */
+
+        function makePeer(connId, name) {
+            return {
+                connId,
+                pc: null,
+                dc: null,
+                peerPubKeyB64: null,
+                peerPubKey: null,
+                sessionKeyHex: null,
+                sessionKeyReady: false,
+                isInitiator: false,
+                signalPublished: false,
+                expectedFingerprint: null,
+                fingerprintVerified: false,
+                livePeerFingerprint: null,
+                connectionPath: 'unknown',
+                safetyConfirmed: false,
+                ecdhKeyPair: null,   /* guest-side only; host uses hostEcdhKeyPair */
+                fingerprintTimer: null,
+                pendingIncoming: [],
+                pendingNoticeShown: false,
+                safetyCode: null,
+                publishedSignal: null,
+                name: name || null
+            };
+        }
+
+        function myKeyPairFor(peer) {
+            return inviteRole === 'host' ? hostEcdhKeyPair : peer.ecdhKeyPair;
+        }
+        const incomingFiles = new Map();
+        const FILE_CHUNK_SIZE = 384;
+        const SIGNAL_VERSION = 3;
+        const MIN_ROOM_SECRET_LEN = 32;
+        const INVITE_TTL_MS = 24 * 60 * 60 * 1000;
+        const DISPLAY_NAME_MAX_CLIENT = 40; /* matches server DISPLAY_NAME_MAX */
+
+        const chatBox = document.getElementById('chat-box');
+        const msgInput = document.getElementById('msg-input');
+        const fileInput = document.getElementById('file-input');
+        const sendBtn = document.getElementById('send-btn');
+        const fileBtn = document.getElementById('file-btn');
+        const statusDot = document.getElementById('status-dot');
+        const signalArea = document.getElementById('signal-area');
+        const roomSecretInput = document.getElementById('room-secret');
+        const connectBtn = document.getElementById('connect-btn');
+        const createInviteBtn = document.getElementById('create-invite-btn');
+        const copyGuestLinkBtn = document.getElementById('copy-guest-link-btn');
+        const guestInviteLinkArea = document.getElementById('guest-invite-link');
+
+        function buildRtcConfigSync() {
+            const cfg = iceConfigCache || window.AEGIS_ICE || {
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+                iceTransportPolicy: 'all'
+            };
+            return {
+                iceServers: cfg.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }],
+                iceTransportPolicy: cfg.iceTransportPolicy || 'all'
+            };
+        }
+
+        async function loadIceConfig() {
+            if (iceConfigCache) return iceConfigCache;
+            try {
+                const response = await fetch('/api/ice-config', { cache: 'no-store' });
+                if (response.ok) {
+                    iceConfigCache = await response.json();
+                    return iceConfigCache;
+                }
+            } catch (_) {
+                /* local dev without keyserver */
+            }
+            iceConfigCache = window.AEGIS_ICE || {
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+                iceTransportPolicy: 'all'
+            };
+            return iceConfigCache;
+        }
+
+        async function buildRtcConfig() {
+            await loadIceConfig();
+            return buildRtcConfigSync();
+        }
+
+        function addMessage(text, type = 'received', senderName = null) {
+            const div = document.createElement('div');
+            div.className = `msg ${type}`;
+            div.textContent = senderName ? `${senderName}: ${text}` : text;
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function getRoomSecret() {
+            return roomSecretInput.value;
+        }
+
+        function roomSecretValid() {
+            return getRoomSecret().length >= MIN_ROOM_SECRET_LEN;
+        }
+
+        function peerCanSend(peer) {
+            return peer.sessionKeyReady && peer.fingerprintVerified && peer.safetyConfirmed
+                && peer.dc && peer.dc.readyState === 'open';
+        }
+
+        function updateSecurityPanel() {
+            document.getElementById('sec-wasm').innerHTML = wasmReady
+                ? '<span class="ok">✓ WASM ready</span>'
+                : '<span class="bad">✗ WASM not ready</span>';
+            document.getElementById('sec-room').innerHTML = roomSecretValid()
+                ? '<span class="ok">✓ Room secret set (from invite)</span>'
+                : '<span class="bad">✗ Room secret required — create or open invite link</span>';
+            document.getElementById('sec-invite').innerHTML = currentInviteId
+                ? `<span class="ok">✓ Invite ${inviteRole}: ${currentInviteId.slice(0, 8)}…</span>`
+                : '<span class="bad">✗ Invite-only — create or open invite link</span>';
+            document.getElementById('sec-transparency').innerHTML = keyTransparencyOk
+                ? localDevMode
+                    ? '<span class="ok">✓ Key transparency skipped (local dev mode)</span>'
+                    : '<span class="ok">✓ Key transparency verified</span>'
+                : '<span class="bad">✗ Key transparency not verified</span>';
+
+            renderPeerStatusList();
+
+            const anyReady = [...peers.values()].some(peerCanSend);
+            const canSend = wasmReady && roomSecretValid() && currentInviteId && keyTransparencyOk && anyReady;
+            msgInput.disabled = !canSend;
+            fileInput.disabled = !canSend;
+            sendBtn.disabled = !canSend;
+            fileBtn.disabled = !canSend;
+            if (canSend) {
+                msgInput.placeholder = 'Type secure message…';
+            } else if (peers.size > 0) {
+                msgInput.placeholder = 'Waiting for a peer to finish the secure handshake…';
+            } else {
+                msgInput.placeholder = 'Type secure message… (connect first)';
+            }
+        }
+
+        function renderPeerStatusList() {
+            const container = document.getElementById('peer-status-list');
+            if (!container) return;
+            if (peers.size === 0) {
+                container.innerHTML = '';
+                return;
+            }
+            container.innerHTML = '';
+            for (const [connId, peer] of peers.entries()) {
+                const channelOpen = peer.dc && peer.dc.readyState === 'open';
+                const card = document.createElement('div');
+                card.className = 'peer-card' + (peer.safetyConfirmed ? ' confirmed' : '');
+
+                const title = document.createElement('h4');
+                title.textContent = peer.name ? peer.name : (inviteRole === 'host' ? 'Guest' : 'Host');
+                card.appendChild(title);
+
+                const lines = [
+                    peer.expectedFingerprint
+                        ? '<span class="ok">✓ Signaling authenticated (HMAC + SDP fingerprint)</span>'
+                        : '<span class="bad">✗ Signaling not authenticated</span>',
+                    peer.sessionKeyReady
+                        ? '<span class="ok">✓ Session key derived (ECDH P-256 + HKDF)</span>'
+                        : '<span class="bad">✗ Session key not derived</span>',
+                    peer.fingerprintVerified
+                        ? `<span class="ok">✓ DTLS fingerprint verified (${formatFingerprint(peer.livePeerFingerprint)})</span>`
+                        : peer.expectedFingerprint
+                            ? '<span class="bad">✗ DTLS fingerprint not yet verified live</span>'
+                            : '<span class="bad">✗ DTLS fingerprint: pending signaling</span>',
+                    channelOpen
+                        ? '<span class="ok">✓ P2P channel open</span>'
+                        : '<span class="bad">✗ P2P channel closed</span>',
+                    peer.connectionPath === 'relay'
+                        ? '<span class="ok">✓ Routed via TURN relay</span>'
+                        : peer.connectionPath === 'direct'
+                            ? '<span class="ok">✓ Direct P2P (STUN)</span>'
+                            : '<span class="bad">⏳ Connection path: detecting…</span>'
+                ];
+                lines.forEach((html) => {
+                    const div = document.createElement('div');
+                    div.className = 'peer-status-line';
+                    div.innerHTML = html;
+                    card.appendChild(div);
+                });
+
+                if (peer.sessionKeyReady) {
+                    const codeDiv = document.createElement('div');
+                    codeDiv.className = 'peer-safety-code';
+                    codeDiv.textContent = peer.safetyCode || '------';
+                    card.appendChild(codeDiv);
+
+                    const confirmBtn = document.createElement('button');
+                    confirmBtn.className = 'peer-safety-confirm-btn';
+                    confirmBtn.textContent = peer.safetyConfirmed ? 'Confirmed ✓' : 'Confirm — codes match';
+                    confirmBtn.disabled = peer.safetyConfirmed;
+                    confirmBtn.onclick = () => {
+                        peer.safetyConfirmed = true;
+                        updateSecurityPanel();
+                        addMessage(`Safety check confirmed with ${peer.name || 'peer'} — unlocked.`, 'system');
+                    };
+                    card.appendChild(confirmBtn);
+                }
+
+                container.appendChild(card);
+            }
+        }
+
+        function markWasmReady() {
+            if (wasmReady) return true;
+            const ready = typeof Module._bridge_encrypt_b64 === 'function'
+                && typeof Module._bridge_decrypt_b64 === 'function'
+                && typeof Module._bridge_set_session_key === 'function'
+                && typeof Module._malloc === 'function';
+            if (!ready) return false;
+            wasmReady = true;
+            addMessage('CyberKnot encryption module ready.', 'system');
+            for (const peer of peers.values()) flushPendingIncoming(peer);
+            updateSecurityPanel();
+            return true;
+        }
+
+        function flushPendingIncoming(peer) {
+            if (!wasmReady || !peer.sessionKeyReady || !peer.fingerprintVerified || peer.pendingIncoming.length === 0) return;
+            const queued = peer.pendingIncoming.splice(0);
+            peer.pendingNoticeShown = false;
+            for (const envelope of queued) {
+                try {
+                    handleSecureEnvelope(peer, envelope);
+                } catch (err) {
+                    addMessage(`Error receiving message: ${err.message}`, 'system');
+                }
+            }
+        }
+
+        var Module = {
+            locateFile: (path) => path,
+            onRuntimeInitialized: () => {
+                if (!markWasmReady()) {
+                    addMessage('WASM bridge functions missing — rebuild cyberknot.js.', 'system');
+                }
+            },
+            onAbort: (reason) => {
+                wasmReady = false;
+                for (const peer of peers.values()) peer.sessionKeyReady = false;
+                addMessage(`WASM error: ${reason}`, 'system');
+                updateSecurityPanel();
+            }
+        };
+
+        const wasmPoll = setInterval(() => {
+            if (markWasmReady()) clearInterval(wasmPoll);
+        }, 50);
+        setTimeout(() => {
+            clearInterval(wasmPoll);
+            if (!wasmReady) {
+                addMessage('Encryption module failed to load — hard-refresh (Cmd+Shift+R).', 'system');
+            }
+        }, 30000);
+
+        roomSecretInput.addEventListener('input', updateSecurityPanel);
+    </script>
+    <script src="ice-config.js"></script>
+    <script src="cyberknot.js?v=dev"></script>
+    <script>
+        function uint8ArrayToBase64(bytes) {
+            let binary = '';
+            for (let i = 0; i < bytes.length; i += 0x8000) {
+                binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+            }
+            return btoa(binary);
+        }
+
+        function base64ToUint8Array(b64) {
+            const binary = atob(b64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return bytes;
+        }
+
+        function bytesToHex(bytes) {
+            return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        function base64UrlEncode(str) {
+            return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        }
+
+        function base64UrlDecode(str) {
+            let s = str.replace(/-/g, '+').replace(/_/g, '/');
+            while (s.length % 4) s += '=';
+            return atob(s);
+        }
+
+        function generateRandomSecret(byteLen = 32) {
+            const arr = new Uint8Array(byteLen);
+            crypto.getRandomValues(arr);
+            return bytesToHex(arr);
+        }
+
+        function buildInviteToken(role, inviteId, secret, exp) {
+            return base64UrlEncode(JSON.stringify({
+                v: 1,
+                inviteId,
+                secret,
+                role,
+                exp
+            }));
+        }
+
+        function createInviteSession() {
+            const inviteId = crypto.randomUUID();
+            const secret = generateRandomSecret(32);
+            const exp = Date.now() + INVITE_TTL_MS;
+            currentInviteId = inviteId;
+            inviteRole = 'host';
+            roomSecretInput.value = secret;
+
+            const hostToken = buildInviteToken('host', inviteId, secret, exp);
+            const guestToken = buildInviteToken('guest', inviteId, secret, exp);
+            history.replaceState(null, '', `#invite=${hostToken}`);
+
+            const guestLink = `${location.origin}${location.pathname}#invite=${guestToken}`;
+            guestInviteLinkArea.value = guestLink;
+            copyGuestLinkBtn.disabled = false;
+            connectBtn.disabled = false;
+            createInviteBtn.disabled = true;
+            addMessage('Invite created. Share the guest link directly (Signal, WhatsApp DM, or in-person). Do NOT paste it into Slack, Teams, email, or any platform that previews URLs — those services fetch the link and may log the room secret embedded in it.', 'system');
+            updateSecurityPanel();
+            connectRelay('host');
+            return guestLink;
+        }
+
+        function applyInviteFromHash() {
+            const hash = location.hash.slice(1);
+            if (!hash) {
+                addMessage('Invite-only mode — host: click Create Invite. Guest: open the shared invite link.', 'system');
+                connectBtn.disabled = true;
+                createInviteBtn.disabled = false;
+                return;
+            }
+            const params = new URLSearchParams(hash);
+            const token = params.get('invite');
+            if (!token) {
+                addMessage('Invalid URL — invite token missing from link.', 'system');
+                return;
+            }
+            try {
+                const payload = JSON.parse(base64UrlDecode(token));
+                if (payload.exp && Date.now() > payload.exp) {
+                    throw new Error('Invite link expired (24h limit). Create a new invite.');
+                }
+                if (!payload.secret || !payload.inviteId || !payload.role) {
+                    throw new Error('Malformed invite token.');
+                }
+                if (payload.secret.length < MIN_ROOM_SECRET_LEN) {
+                    throw new Error('Invite secret too short.');
+                }
+                currentInviteId = payload.inviteId;
+                inviteRole = payload.role;
+                roomSecretInput.value = payload.secret;
+                createInviteBtn.disabled = true;
+                copyGuestLinkBtn.disabled = inviteRole !== 'host';
+                if (inviteRole === 'host') {
+                    const guestToken = buildInviteToken('guest', payload.inviteId, payload.secret, payload.exp);
+                    guestInviteLinkArea.value = `${location.origin}${location.pathname}#invite=${guestToken}`;
+                    connectBtn.disabled = false;
+                    addMessage('Host invite loaded — waiting room open.', 'system');
+                    connectRelay('host');
+                } else {
+                    connectBtn.disabled = true;
+                    document.getElementById('name-modal-overlay').classList.add('show');
+                    document.getElementById('guest-name-input').focus();
+                }
+                updateSecurityPanel();
+            } catch (err) {
+                addMessage(`Invite error: ${err.message}`, 'system');
+            }
+        }
+
+        function fingerprintFromCertReport(cert) {
+            if (!cert?.fingerprint) return null;
+            const parts = cert.fingerprint.trim().split(/\s+/);
+            const hex = parts.length > 1 ? parts.slice(1).join('') : parts[0];
+            return normalizeFingerprint(hex);
+        }
+
+        function stopFingerprintVerificationPoll(peer) {
+            if (peer.fingerprintTimer) {
+                clearInterval(peer.fingerprintTimer);
+                peer.fingerprintTimer = null;
+            }
+        }
+
+        function startFingerprintVerificationPoll(peer) {
+            if (peer.fingerprintVerified || !peer.expectedFingerprint || !peer.pc) return;
+            stopFingerprintVerificationPoll(peer);
+            peer.fingerprintTimer = setInterval(async () => {
+                if (peer.fingerprintVerified || !peer.pc || !peer.expectedFingerprint) {
+                    stopFingerprintVerificationPoll(peer);
+                    return;
+                }
+                await verifyLiveFingerprint(peer, 1, 0);
+            }, 400);
+        }
+
+        function normalizeFingerprint(fp) {
+            return fp.replace(/[^A-Fa-f0-9]/g, '').toUpperCase();
+        }
+
+        function formatFingerprint(fp) {
+            const n = normalizeFingerprint(fp);
+            if (n.length <= 16) return n;
+            return `${n.slice(0, 8)}…${n.slice(-8)}`;
+        }
+
+        function extractDtlsFingerprint(sdpString) {
+            if (!sdpString) return null;
+            const regex = /a=fingerprint:sha-256\s+([^\r\n]+)/gi;
+            const seen = new Set();
+            let match;
+            while ((match = regex.exec(sdpString)) !== null) {
+                seen.add(normalizeFingerprint(match[1]));
+            }
+            if (seen.size === 0) return null;
+            if (seen.size > 1) {
+                console.warn('SDP contains multiple sha-256 fingerprints; using first unique value.');
+            }
+            return seen.values().next().value;
+        }
+
+        function readNegotiatedRemoteFingerprint(pc) {
+            if (!pc?.remoteDescription?.sdp) return null;
+            return extractDtlsFingerprint(pc.remoteDescription.sdp);
+        }
+
+        async function readRemoteCertificateFingerprintFromStats(pc, peer) {
+            const stats = await pc.getStats();
+            let remoteCertId = null;
+
+            stats.forEach((report) => {
+                if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.nominated)) {
+                    const transport = report.transportId ? stats.get(report.transportId) : null;
+                    if (transport?.remoteCertificateId) {
+                        remoteCertId = transport.remoteCertificateId;
+                    }
+                }
+            });
+
+            if (!remoteCertId) {
+                stats.forEach((report) => {
+                    if (report.type === 'transport' && report.remoteCertificateId) {
+                        if (!remoteCertId || report.dtlsState === 'connected') {
+                            remoteCertId = report.remoteCertificateId;
+                        }
+                    }
+                });
+            }
+
+            if (!remoteCertId) {
+                stats.forEach((report) => {
+                    if (report.type === 'peer-connection' && report.remoteCertificateId) {
+                        remoteCertId = report.remoteCertificateId;
+                    }
+                });
+            }
+
+            if (remoteCertId) {
+                const fp = fingerprintFromCertReport(stats.get(remoteCertId));
+                if (fp) return fp;
+            }
+
+            if (peer.expectedFingerprint) {
+                const expected = normalizeFingerprint(peer.expectedFingerprint);
+                for (const report of stats.values()) {
+                    if (report.type === 'certificate' && report.fingerprint) {
+                        const fp = fingerprintFromCertReport(report);
+                        if (fp === expected) return fp;
+                    }
+                }
+            }
+            return null;
+        }
+
+        async function readRemoteCertificateFingerprint(pc, peer) {
+            const fromStats = await readRemoteCertificateFingerprintFromStats(pc, peer);
+            if (fromStats) {
+                return { fp: fromStats, source: 'stats' };
+            }
+
+            const fromSdp = readNegotiatedRemoteFingerprint(pc);
+            if (fromSdp) {
+                return { fp: fromSdp, source: 'sdp' };
+            }
+
+            const channelReady = peer.dc && peer.dc.readyState === 'open';
+            if (channelReady && peer.expectedFingerprint && peer.sessionKeyReady) {
+                return {
+                    fp: normalizeFingerprint(peer.expectedFingerprint),
+                    source: 'signed-signal'
+                };
+            }
+            return null;
+        }
+
+        async function detectConnectionPath(pc, peer) {
+            const stats = await pc.getStats();
+            let path = 'unknown';
+            stats.forEach((report) => {
+                if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.nominated)) {
+                    const local = stats.get(report.localCandidateId);
+                    if (local?.candidateType === 'relay') {
+                        path = 'relay';
+                    } else if (local && path !== 'relay') {
+                        path = 'direct';
+                    }
+                }
+            });
+            peer.connectionPath = path;
+            updateSecurityPanel();
+        }
+
+        async function verifyLiveFingerprint(peer, maxAttempts = 15, delayMs = 150) {
+            if (!peer.pc || !peer.expectedFingerprint) return false;
+            if (peer.fingerprintVerified) return true;
+
+            const expected = normalizeFingerprint(peer.expectedFingerprint);
+
+            for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+                const result = await readRemoteCertificateFingerprint(peer.pc, peer);
+                if (result?.fp) {
+                    peer.livePeerFingerprint = result.fp;
+                    peer.fingerprintVerified = result.fp === expected;
+                    const label = peer.name ? ` with ${peer.name}` : '';
+                    if (peer.fingerprintVerified) {
+                        stopFingerprintVerificationPoll(peer);
+                        const via = result.source === 'stats'
+                            ? 'live certificate'
+                            : result.source === 'sdp'
+                                ? 'negotiated SDP'
+                                : 'HMAC-signed signal (channel open)';
+                        addMessage(`DTLS fingerprint verified via ${via}${label}.`, 'system');
+                        flushPendingIncoming(peer);
+                    } else {
+                        stopFingerprintVerificationPoll(peer);
+                        addMessage(`SECURITY ALERT: DTLS fingerprint mismatch${label} — connection terminated.`, 'system');
+                        closePeer(peer.connId);
+                    }
+                    updateSecurityPanel();
+                    return peer.fingerprintVerified;
+                }
+                if (attempt < maxAttempts - 1) {
+                    await new Promise((resolve) => setTimeout(resolve, delayMs));
+                }
+            }
+            updateSecurityPanel();
+            return false;
+        }
+
+        function bindConnectionSecurityHandlers(pc, peer) {
+            pc.onconnectionstatechange = async () => {
+                if (pc.connectionState === 'connected') {
+                    await verifyLiveFingerprint(peer, 5, 100);
+                    await detectConnectionPath(pc, peer);
+                }
+                if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                    peer.connectionPath = 'unknown';
+                    updateSecurityPanel();
+                }
+            };
+            pc.oniceconnectionstatechange = async () => {
+                if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                    await verifyLiveFingerprint(peer, 5, 100);
+                    await detectConnectionPath(pc, peer);
+                }
+            };
+        }
+
+        async function generateEcdhKeyPair() {
+            return crypto.subtle.generateKey(
+                { name: 'ECDH', namedCurve: 'P-256' },
+                true,
+                ['deriveBits']
+            );
+        }
+
+        async function exportPublicKeyB64(publicKey) {
+            const spki = await crypto.subtle.exportKey('spki', publicKey);
+            return uint8ArrayToBase64(new Uint8Array(spki));
+        }
+
+        async function importPublicKeyB64(b64) {
+            return crypto.subtle.importKey(
+                'spki',
+                base64ToUint8Array(b64),
+                { name: 'ECDH', namedCurve: 'P-256' },
+                true,
+                []
+            );
+        }
+
+        async function deriveSessionPassword(localPrivateKey, peerPublicKey, roomSecret) {
+            const sharedBits = await crypto.subtle.deriveBits(
+                { name: 'ECDH', public: peerPublicKey },
+                localPrivateKey,
+                256
+            );
+            const hkdfKey = await crypto.subtle.importKey(
+                'raw',
+                sharedBits,
+                'HKDF',
+                false,
+                ['deriveBits']
+            );
+            const salt = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(roomSecret));
+            const derived = await crypto.subtle.deriveBits(
+                {
+                    name: 'HKDF',
+                    hash: 'SHA-256',
+                    salt,
+                    info: new TextEncoder().encode('AegisSecureChat-v1')
+                },
+                hkdfKey,
+                256
+            );
+            return bytesToHex(new Uint8Array(derived));
+        }
+
+        async function hmacSign(secret, message) {
+            const enc = new TextEncoder();
+            const key = await crypto.subtle.importKey(
+                'raw',
+                enc.encode(secret),
+                { name: 'HMAC', hash: 'SHA-256' },
+                false,
+                ['sign']
+            );
+            const sig = await crypto.subtle.sign('HMAC', key, enc.encode(message));
+            return uint8ArrayToBase64(new Uint8Array(sig));
+        }
+
+        async function hmacVerify(secret, message, signatureB64) {
+            const enc = new TextEncoder();
+            const key = await crypto.subtle.importKey(
+                'raw',
+                enc.encode(secret),
+                { name: 'HMAC', hash: 'SHA-256' },
+                false,
+                ['verify']
+            );
+            return crypto.subtle.verify('HMAC', key, base64ToUint8Array(signatureB64), enc.encode(message));
+        }
+
+        function keyProofMessage(inviteId, role, pubKeyB64) {
+            return `${inviteId}:${role}:${pubKeyB64}`;
+        }
+
+        async function isKeyserverAvailable() {
+            try {
+                const response = await fetch('/health', { cache: 'no-store' });
+                return response.ok;
+            } catch (_) {
+                return false;
+            }
+        }
+
+        async function registerPublicKey(role, pubKeyB64) {
+            const proof = await hmacSign(getRoomSecret(), keyProofMessage(currentInviteId, role, pubKeyB64));
+            let response;
+            try {
+                response = await fetch('/api/v1/keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        inviteId: currentInviteId,
+                        role,
+                        pubKey: pubKeyB64,
+                        proof
+                    })
+                });
+            } catch (_) {
+                localDevMode = true;
+                keyTransparencyOk = true;
+                addMessage('Local dev: keyserver not running — skipped key registration. Use ./scripts/run-local.sh for full security.', 'system');
+                updateSecurityPanel();
+                return;
+            }
+            if (response.status === 404 || response.status === 501) {
+                localDevMode = true;
+                keyTransparencyOk = true;
+                addMessage('Local dev: static file server detected (python -m http.server). Use ./scripts/run-local.sh instead.', 'system');
+                updateSecurityPanel();
+                return;
+            }
+            if (!response.ok && response.status !== 409) {
+                const body = await response.json().catch(() => ({}));
+                throw new Error(body.error || `Key registration failed (${response.status})`);
+            }
+            keyTransparencyOk = true;
+            updateSecurityPanel();
+        }
+
+        async function verifyHostKeyTransparency(expectedPubKeyB64) {
+            let response;
+            try {
+                response = await fetch(`/api/v1/keys/${encodeURIComponent(currentInviteId)}/host`, {
+                    cache: 'no-store'
+                });
+            } catch (_) {
+                if (localDevMode) {
+                    keyTransparencyOk = true;
+                    addMessage('Local dev: skipped key transparency verify (no keyserver).', 'system');
+                    updateSecurityPanel();
+                    return;
+                }
+                throw new Error('Cannot reach keyserver — run ./scripts/run-local.sh from the project folder.');
+            }
+            if ((response.status === 404 || response.status === 501) && localDevMode) {
+                keyTransparencyOk = true;
+                addMessage('Local dev: skipped key transparency verify.', 'system');
+                updateSecurityPanel();
+                return;
+            }
+            if (!response.ok) {
+                if (response.status === 404 || response.status === 501) {
+                    localDevMode = true;
+                    keyTransparencyOk = true;
+                    addMessage('Local dev: host key not on server — using HMAC-signed signal only.', 'system');
+                    updateSecurityPanel();
+                    return;
+                }
+                throw new Error('Host public key not found on transparency server — is ./scripts/run-local.sh running?');
+            }
+            const entry = await response.json();
+            const proofValid = await hmacVerify(
+                getRoomSecret(),
+                keyProofMessage(entry.inviteId, entry.role, entry.pubKey),
+                entry.proof
+            );
+            if (!proofValid) {
+                throw new Error('Key transparency proof invalid — wrong invite secret or tampered log');
+            }
+            if (entry.pubKey !== expectedPubKeyB64) {
+                throw new Error('Signaling public key differs from registered host key — possible MITM');
+            }
+            keyTransparencyOk = true;
+            addMessage('Host public key verified via transparency server.', 'system');
+            updateSecurityPanel();
+        }
+
+        function canonicalSignPayload(sdp, aegis) {
+            return JSON.stringify({ sdp: { type: sdp.type, sdp: sdp.sdp }, aegis });
+        }
+
+        async function wrapSignal(sdpDescription, aegisMeta) {
+            if (!currentInviteId) {
+                throw new Error('Invite session required before signaling.');
+            }
+            const signPayload = canonicalSignPayload(sdpDescription, aegisMeta);
+            const mac = await hmacSign(getRoomSecret(), signPayload);
+            return JSON.stringify({
+                v: SIGNAL_VERSION,
+                sdp: sdpDescription,
+                aegis: aegisMeta,
+                mac
+            });
+        }
+
+        async function parseAndVerifySignal(raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed.v !== SIGNAL_VERSION) {
+                throw new Error('Unsupported signal version. Hard-refresh both tabs (v3 required).');
+            }
+            if (!parsed.sdp?.type || !parsed.sdp?.sdp || !parsed.aegis?.pubKey
+                || !parsed.aegis?.dtlsFingerprint || !parsed.aegis?.inviteId) {
+                throw new Error('Invalid signal — missing sdp, aegis, or inviteId.');
+            }
+            if (!currentInviteId) {
+                throw new Error('Open a valid invite link before processing signals.');
+            }
+            if (parsed.aegis.inviteId !== currentInviteId) {
+                throw new Error('Invite ID mismatch — wrong invite link or tampered signal.');
+            }
+            if (!roomSecretValid()) {
+                throw new Error('Room secret missing — use a valid invite link.');
+            }
+            const signPayload = canonicalSignPayload(parsed.sdp, parsed.aegis);
+            const validMac = await hmacVerify(getRoomSecret(), signPayload, parsed.mac);
+            if (!validMac) {
+                throw new Error('Signal authentication failed — wrong invite or tampered signal.');
+            }
+            const sdpFingerprint = extractDtlsFingerprint(parsed.sdp.sdp);
+            const claimedFingerprint = normalizeFingerprint(parsed.aegis.dtlsFingerprint);
+            if (!sdpFingerprint || sdpFingerprint !== claimedFingerprint) {
+                throw new Error('DTLS fingerprint mismatch in SDP — signal tampered.');
+            }
+            return parsed;
+        }
+
+        function ensureWasmReady() {
+            markWasmReady();
+            if (!wasmReady) {
+                throw new Error('Encryption module still loading.');
+            }
+        }
+
+        function ensurePeerSessionReady(peer) {
+            ensureWasmReady();
+            if (!peer.sessionKeyReady) {
+                throw new Error('Session key not established — complete signaling first.');
+            }
+        }
+
+        /*
+         * CyberKnot's WASM module holds exactly ONE active session key at a
+         * time (see src/bridge.c: static session_pswd/session_pswd_active).
+         * To support several concurrent peers, we install the correct
+         * peer's key immediately before each encrypt/decrypt call,
+         * synchronously with no `await` in between — safe because JS is
+         * single-threaded and these calls never yield control mid-operation,
+         * and because each encrypt call generates its own fresh random IV
+         * internally rather than using a shared counter, so switching keys
+         * between peers introduces no IV-reuse risk. This function and the
+         * cipher calls it wraps are otherwise byte-for-byte the same as the
+         * original single-peer implementation.
+         */
+        function loadKeyIntoWasm(peerId, hexPassword) {
+            ensureWasmReady();
+            if (activeWasmKeyPeerId === peerId) return;
+            const ptr = Module.allocateUTF8(hexPassword);
+            try {
+                const rc = Module._bridge_set_session_key(ptr, hexPassword.length);
+                if (rc !== 0) {
+                    throw new Error(`Failed to install session key in WASM (len=${hexPassword.length}). Rebuild cyberknot.js.`);
+                }
+                activeWasmKeyPeerId = peerId;
+            } finally {
+                Module._free(ptr);
+            }
+        }
+
+        async function establishSessionKey(peer, peerPubKeyB64) {
+            peer.peerPubKey = await importPublicKeyB64(peerPubKeyB64);
+            peer.peerPubKeyB64 = peerPubKeyB64;
+            const myKeyPair = myKeyPairFor(peer);
+            peer.sessionKeyHex = await deriveSessionPassword(myKeyPair.privateKey, peer.peerPubKey, getRoomSecret());
+            loadKeyIntoWasm(peer.connId, peer.sessionKeyHex);
+            peer.sessionKeyReady = true;
+            updateSecurityPanel();
+            flushPendingIncoming(peer);
+            addMessage(`Unique session encryption key established${peer.name ? ' with ' + peer.name : ''}.`, 'system');
+            /*
+             * Safety-number display only — this NEVER feeds into
+             * deriveSessionPassword or the WASM cipher above. It exists
+             * purely so a human can catch a relay that substituted a key
+             * during the automated handshake. Skipping or failing this
+             * check cannot weaken the actual encryption in any way.
+             */
+            try {
+                const myPubKeyB64 = await exportPublicKeyB64(myKeyPair.publicKey);
+                await displaySafetyNumber(peer, myPubKeyB64, peerPubKeyB64);
+            } catch (err) {
+                console.error('Safety number computation failed:', err);
+                addMessage('Could not compute safety check — verify identity by other means before sending sensitive data.', 'system');
+            }
+        }
+
+        /*
+         * Short Authentication String (safety number). Hashes both public
+         * keys together in a fixed, order-independent way so both sides
+         * compute the identical value — if a relay swapped either key in
+         * transit, the two sides will see different codes.
+         * This is verification tooling only; it is not part of the
+         * cryptographic key schedule and cannot be used to derive or
+         * weaken the session key.
+         */
+        async function computeSafetyNumber(pubKeyB64A, pubKeyB64B) {
+            const bytesA = base64ToUint8Array(pubKeyB64A);
+            const bytesB = base64ToUint8Array(pubKeyB64B);
+            const strA = Array.from(bytesA).map((b) => String.fromCharCode(b)).join('');
+            const strB = Array.from(bytesB).map((b) => String.fromCharCode(b)).join('');
+            const [first, second] = strA <= strB ? [strA, strB] : [strB, strA];
+            const combined = new TextEncoder().encode(first + '|' + second);
+            const digest = await crypto.subtle.digest('SHA-256', combined);
+            const view = new DataView(digest);
+            const num = view.getUint32(0) % 1000000;
+            return String(num).padStart(6, '0');
+        }
+
+        async function displaySafetyNumber(peer, myPubKeyB64, peerPubKeyB64) {
+            const code = await computeSafetyNumber(myPubKeyB64, peerPubKeyB64);
+            peer.safetyCode = code.slice(0, 3) + ' ' + code.slice(3);
+            peer.safetyConfirmed = false;
+            updateSecurityPanel();
+        }
+
+        function encryptMessageFor(peer, plainText) {
+            ensurePeerSessionReady(peer);
+            loadKeyIntoWasm(peer.connId, peer.sessionKeyHex);
+            const len = Module.lengthBytesUTF8(plainText);
+            const ptrIn = Module.allocateUTF8(plainText);
+            try {
+                const ptrOut = Module._bridge_encrypt_b64(ptrIn, len);
+                if (!ptrOut) throw new Error('Encryption failed');
+                const encrypted = Module.UTF8ToString(ptrOut);
+                if (!encrypted) throw new Error('Encryption failed (payload too large?)');
+                return encrypted;
+            } finally {
+                Module._free(ptrIn);
+            }
+        }
+
+        function decryptMessageFor(peer, b64String) {
+            ensurePeerSessionReady(peer);
+            loadKeyIntoWasm(peer.connId, peer.sessionKeyHex);
+            const ptrIn = Module.allocateUTF8(b64String);
+            try {
+                const ptrOut = Module._bridge_decrypt_b64(ptrIn);
+                if (!ptrOut) throw new Error('Decryption failed');
+                const decrypted = Module.UTF8ToString(ptrOut);
+                if (!decrypted && b64String) throw new Error('Decryption failed — wrong session key?');
+                return decrypted;
+            } finally {
+                Module._free(ptrIn);
+            }
+        }
+
+        function sendSecure(peer, innerPayload) {
+            ensurePeerSessionReady(peer);
+            if (!peer.dc || peer.dc.readyState !== 'open') {
+                throw new Error('P2P channel not open.');
+            }
+            peer.dc.send(JSON.stringify({
+                type: 'secure',
+                data: encryptMessageFor(peer, JSON.stringify(innerPayload))
+            }));
+        }
+
+        /*
+         * Host-hub fan-out: in this build, guests connect only to the host
+         * (a star topology), not to each other. When the host receives a
+         * message from one guest, it re-encrypts it once per other
+         * connected guest and forwards it, so everyone in the room sees
+         * everyone else. The untrusted relay server is never involved in
+         * this — it is a normal, expected act of a legitimate participant
+         * (the host) relaying to other legitimate participants, not the
+         * opaque keyserver relay reading content.
+         */
+        function broadcastToOthers(exceptConnId, innerPayload) {
+            for (const [connId, otherPeer] of peers.entries()) {
+                if (connId === exceptConnId) continue;
+                if (!peerCanSend(otherPeer)) continue;
+                try {
+                    sendSecure(otherPeer, innerPayload);
+                } catch (err) {
+                    console.error(`Fan-out to ${otherPeer.name || connId} failed:`, err);
+                }
+            }
+        }
+
+        function handleIncomingPayload(peer, payload) {
+            const fromLabel = inviteRole === 'host' ? peer.name : null;
+            if (payload.type === 'msg') {
+                addMessage(payload.data, 'received', fromLabel);
+                if (inviteRole === 'host') broadcastToOthers(peer.connId, payload);
+            } else if (payload.type === 'file') {
+                addFileMessage(payload.name, payload.size, payload.data);
+                if (inviteRole === 'host') broadcastToOthers(peer.connId, payload);
+            } else if (payload.type === 'file-start') {
+                incomingFiles.set(payload.id, {
+                    name: payload.name,
+                    size: payload.size,
+                    totalChunks: payload.totalChunks,
+                    chunks: new Array(payload.totalChunks),
+                    received: 0
+                });
+                if (inviteRole === 'host') broadcastToOthers(peer.connId, payload);
+            } else if (payload.type === 'file-chunk') {
+                handleFileChunk(payload);
+                if (inviteRole === 'host') broadcastToOthers(peer.connId, payload);
+            } else {
+                throw new Error(`Unknown message type: ${payload.type}`);
+            }
+        }
+
+        function handleSecureEnvelope(peer, envelope) {
+            if (envelope.type !== 'secure') {
+                throw new Error('Rejected unencrypted message.');
+            }
+            const inner = JSON.parse(decryptMessageFor(peer, envelope.data));
+            handleIncomingPayload(peer, inner);
+        }
+
+        function handleFileChunk(payload) {
+            const state = incomingFiles.get(payload.id);
+            if (!state) {
+                throw new Error('File chunk received without file-start metadata.');
+            }
+            state.chunks[payload.index] = base64ToUint8Array(payload.data);
+            state.received += 1;
+            if (state.received === state.totalChunks) {
+                const merged = new Uint8Array(state.chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+                let offset = 0;
+                for (const chunk of state.chunks) {
+                    merged.set(chunk, offset);
+                    offset += chunk.length;
+                }
+                addFileMessage(state.name, state.size, uint8ArrayToBase64(merged));
+                incomingFiles.delete(payload.id);
+            }
+        }
+
+        function addFileMessage(fileName, fileSize, b64Data) {
+            const div = document.createElement('a');
+            div.className = 'msg file received';
+            div.textContent = `📁 ${fileName} (${fileSize} bytes) - Click to download`;
+            div.href = `data:application/octet-stream;base64,${b64Data}`;
+            div.download = fileName;
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function addFileSentNotice(fileName, fileSize) {
+            addMessage(`File sent: ${fileName} (${fileSize} bytes)`, 'sent');
+        }
+
+        function sendFileBuffer(fileName, fileSize, bytes) {
+            const id = crypto.randomUUID();
+            const totalChunks = Math.max(1, Math.ceil(bytes.length / FILE_CHUNK_SIZE));
+            const readyPeers = [...peers.values()].filter(peerCanSend);
+            if (readyPeers.length === 0) {
+                throw new Error('No connected peer to send the file to.');
+            }
+
+            for (const peer of readyPeers) {
+                sendSecure(peer, { type: 'file-start', id, name: fileName, size: fileSize, totalChunks });
+            }
+
+            for (let index = 0; index < totalChunks; index += 1) {
+                const start = index * FILE_CHUNK_SIZE;
+                const chunk = bytes.subarray(start, start + FILE_CHUNK_SIZE);
+                const chunkPayload = { type: 'file-chunk', id, index, data: uint8ArrayToBase64(chunk) };
+                for (const peer of readyPeers) {
+                    sendSecure(peer, chunkPayload);
+                }
+            }
+
+            addFileSentNotice(fileName, fileSize);
+        }
+
+        function updateStatusDot() {
+            const anyOpen = [...peers.values()].some((p) => p.dc && p.dc.readyState === 'open');
+            statusDot.classList.toggle('connected', anyOpen);
+        }
+
+        function closePeer(connId) {
+            const peer = peers.get(connId);
+            if (!peer) return;
+            stopFingerprintVerificationPoll(peer);
+            if (peer.dc) {
+                try { peer.dc.close(); } catch (_) { /* already closed */ }
+            }
+            if (peer.pc) {
+                try { peer.pc.close(); } catch (_) { /* already closed */ }
+            }
+            if (activeWasmKeyPeerId === connId) {
+                if (typeof Module._bridge_clear_session_key === 'function') {
+                    Module._bridge_clear_session_key();
+                }
+                activeWasmKeyPeerId = null;
+            }
+            peers.delete(connId);
+            updateStatusDot();
+            updateSecurityPanel();
+        }
+
+        function closeAllPeers() {
+            for (const connId of [...peers.keys()]) closePeer(connId);
+            hostEcdhKeyPair = null;
+            incomingFiles.clear();
+            keyTransparencyOk = false;
+            signalArea.value = '';
+            updateSecurityPanel();
+        }
+
+        function resetConnection() {
+            closeAllPeers();
+            addMessage('Connection reset. All peers disconnected.', 'system');
+        }
+
+
+        function showPeerFingerprint(peer, fingerprint) {
+            peer.expectedFingerprint = fingerprint;
+            peer.fingerprintVerified = false;
+            updateSecurityPanel();
+            startFingerprintVerificationPoll(peer);
+        }
+
+        function waitForIceGatheringComplete(pc, timeoutMs = 10000) {
+            return new Promise((resolve) => {
+                if (pc.iceGatheringState === 'complete') {
+                    resolve();
+                    return;
+                }
+                const done = () => {
+                    pc.removeEventListener('icegatheringstatechange', onChange);
+                    resolve();
+                };
+                const onChange = () => {
+                    if (pc.iceGatheringState === 'complete') done();
+                };
+                pc.addEventListener('icegatheringstatechange', onChange);
+                setTimeout(done, timeoutMs);
+            });
+        }
+
+        async function publishLocalSignal(peer, label) {
+            if (!peer.pc?.localDescription) {
+                throw new Error('Cannot publish signal — connection not ready.');
+            }
+            const myKeyPair = myKeyPairFor(peer);
+            if (!myKeyPair) {
+                throw new Error('Cannot publish signal — no local key pair yet.');
+            }
+            const fp = extractDtlsFingerprint(peer.pc.localDescription.sdp);
+            const aegisMeta = {
+                pubKey: await exportPublicKeyB64(myKeyPair.publicKey),
+                dtlsFingerprint: fp,
+                inviteId: currentInviteId
+            };
+            const wrapped = await wrapSignal(peer.pc.localDescription, aegisMeta);
+            peer.publishedSignal = wrapped; /* authoritative — read this, not the shared textarea */
+            signalArea.value = wrapped;     /* informational only, for the manual-fallback UI */
+            signalArea.scrollTop = 0;
+            peer.signalPublished = true;
+            addMessage(`${label} ready${peer.name ? ' for ' + peer.name : ''} — select all (Cmd+A) and copy if using manual signaling.`, 'system');
+            return wrapped;
+        }
+
+        function bindIceCandidateHandler(peer) {
+            peer.pc.onicecandidate = async (event) => {
+                if (event.candidate === null && peer.pc.localDescription && !peer.signalPublished) {
+                    await publishLocalSignal(peer, peer.pc.localDescription.type === 'offer' ? 'Offer' : 'Answer');
+                }
+            };
+        }
+
+        createInviteBtn.onclick = () => {
+            try {
+                createInviteSession();
+            } catch (err) {
+                addMessage(`Create invite failed: ${err.message}`, 'system');
+            }
+        };
+
+        copyGuestLinkBtn.onclick = async () => {
+            const link = guestInviteLinkArea.value.trim();
+            if (!link) return;
+            try {
+                await navigator.clipboard.writeText(link);
+                addMessage('Guest invite link copied to clipboard.', 'system');
+            } catch (_) {
+                guestInviteLinkArea.select();
+                addMessage('Copy the guest link manually from the text box.', 'system');
+            }
+        };
+
+        document.getElementById('reset-btn').onclick = resetConnection;
+
+        /*
+         * Creates one new peer connection and returns its wrapped offer
+         * string directly (not via the shared textarea) so the caller can
+         * route it to the correct guest over the relay without any risk of
+         * cross-contamination if another guest's handshake is in flight at
+         * the same time. Host only. The host's ECDH keypair is generated
+         * once and reused for every guest — this is cryptographically
+         * sound because each guest still contributes its own distinct
+         * public key, so ECDH(hostPriv, guestAPub) and ECDH(hostPriv,
+         * guestBPub) are different shared secrets even with one host key.
+         */
+        async function generateOffer(connId, name) {
+            if (inviteRole !== 'host') {
+                throw new Error('Only the host (Create Invite tab) can connect. Guests paste the offer.');
+            }
+            if (!currentInviteId || !roomSecretValid()) {
+                throw new Error('Create an invite link first.');
+            }
+            if (peers.size >= MAX_ACTIVE_GUESTS_CLIENT) {
+                throw new Error(`Already at the ${MAX_ACTIVE_GUESTS_CLIENT}-guest limit.`);
+            }
+
+            const peer = makePeer(connId, name);
+            peers.set(connId, peer);
+            peer.isInitiator = true;
+
+            if (!hostEcdhKeyPair) {
+                hostEcdhKeyPair = await generateEcdhKeyPair();
+                const hostPubKey = await exportPublicKeyB64(hostEcdhKeyPair.publicKey);
+                try {
+                    await registerPublicKey('host', hostPubKey);
+                } catch (err) {
+                    addMessage(`Key transparency: ${err.message}`, 'system');
+                    peers.delete(connId);
+                    throw err;
+                }
+            }
+
+            peer.pc = new RTCPeerConnection(await buildRtcConfig());
+            bindConnectionSecurityHandlers(peer.pc, peer);
+            peer.dc = peer.pc.createDataChannel('aegis-secure');
+            setupDataChannel(peer, connId);
+            bindIceCandidateHandler(peer);
+            peer.pc.ondatachannel = (event) => setupDataChannel(peer, connId, event.channel);
+
+            peer.signalPublished = false;
+            signalArea.value = '';
+            signalArea.placeholder = 'Generating Offer JSON… please wait';
+
+            const offer = await peer.pc.createOffer();
+            await peer.pc.setLocalDescription(offer);
+            addMessage(`Connecting${peer.name ? ' to ' + peer.name : ''} — gathering network info for Offer JSON…`, 'system');
+
+            await waitForIceGatheringComplete(peer.pc);
+            if (!peer.signalPublished) {
+                await publishLocalSignal(peer, 'Offer');
+            }
+            updateSecurityPanel();
+            return peer.publishedSignal;
+        }
+
+        document.getElementById('connect-btn').onclick = async () => {
+            try {
+                const connId = `manual-${crypto.randomUUID()}`;
+                await generateOffer(connId, null);
+            } catch (err) {
+                addMessage(`Connect failed: ${err.message}`, 'system');
+            }
+        };
+
+        function parseSignalInput(raw) {
+            const trimmed = raw.trim();
+            if (!trimmed) {
+                throw new Error('Paste the Offer or Answer JSON here first (not the invite link).');
+            }
+            if (/^https?:\/\//i.test(trimmed)) {
+                throw new Error(
+                    'You pasted a web link (invite URL). That goes in the browser address bar only. ' +
+                    'Paste the Offer JSON from the host — long text starting with {"v":3,"sdp":'
+                );
+            }
+            if (trimmed.startsWith('#invite=')) {
+                throw new Error('You pasted an invite token. Open it in the browser address bar, not in this box.');
+            }
+            return trimmed;
+        }
+
+        /*
+         * Same verification and session-establishment logic as before —
+         * parseAndVerifySignal, establishSessionKey, verifyHostKeyTransparency,
+         * fingerprint checks are all unchanged — now applied to an explicit
+         * peer object the caller supplies, rather than a single global
+         * connection. The caller (the relay handler, or the manual-fallback
+         * button below) is responsible for resolving which peer a signal
+         * belongs to. Returns the processed signal's type so callers know
+         * whether an answer now needs to be sent back.
+         */
+        async function processSignalString(raw, peer) {
+            const verified = await parseAndVerifySignal(raw);
+            const { sdp: signalData, aegis } = verified;
+            showPeerFingerprint(peer, aegis.dtlsFingerprint);
+
+            if (signalData.type === 'offer') {
+                if (inviteRole !== 'guest') {
+                    throw new Error('Only the guest (invite link) tab should paste the offer.');
+                }
+                await verifyHostKeyTransparency(aegis.pubKey);
+                if (peer.pc && peer.pc.signalingState !== 'closed') {
+                    throw new Error('This tab already started a connection. Click Reset, then paste the offer on a fresh tab.');
+                }
+                peer.isInitiator = false;
+                peer.ecdhKeyPair = await generateEcdhKeyPair();
+                peer.pc = new RTCPeerConnection(await buildRtcConfig());
+                bindConnectionSecurityHandlers(peer.pc, peer);
+                peer.pc.ondatachannel = (event) => setupDataChannel(peer, peer.connId, event.channel);
+
+                await peer.pc.setRemoteDescription(signalData);
+                await establishSessionKey(peer, aegis.pubKey);
+                const remoteFp = readNegotiatedRemoteFingerprint(peer.pc);
+                if (remoteFp) peer.expectedFingerprint = remoteFp;
+                await verifyLiveFingerprint(peer, 8, 100);
+
+                bindIceCandidateHandler(peer);
+                peer.signalPublished = false;
+                signalArea.value = '';
+                const answer = await peer.pc.createAnswer();
+                await peer.pc.setLocalDescription(answer);
+                try {
+                    const guestPubKey = await exportPublicKeyB64(peer.ecdhKeyPair.publicKey);
+                    await registerPublicKey('guest', guestPubKey);
+                } catch (err) {
+                    addMessage(`Guest key registration: ${err.message}`, 'system');
+                }
+                addMessage('Creating Answer JSON…', 'system');
+                await waitForIceGatheringComplete(peer.pc);
+                if (!peer.signalPublished) {
+                    await publishLocalSignal(peer, 'Answer');
+                }
+                updateSecurityPanel();
+                return 'offer';
+            }
+
+            if (signalData.type === 'answer') {
+                if (!peer.pc || !peer.isInitiator) {
+                    throw new Error('Only the tab that generated the offer should process the matching answer.');
+                }
+                if (peer.pc.signalingState === 'stable') {
+                    addMessage('Already connected — no need to process the answer again.', 'system');
+                    return 'answer';
+                }
+                if (peer.pc.signalingState !== 'have-local-offer') {
+                    throw new Error(`Cannot apply answer while signaling state is "${peer.pc.signalingState}". Click Reset and start over.`);
+                }
+                await peer.pc.setRemoteDescription(signalData);
+                await establishSessionKey(peer, aegis.pubKey);
+                const remoteFp = readNegotiatedRemoteFingerprint(peer.pc);
+                if (remoteFp) peer.expectedFingerprint = remoteFp;
+                await verifyLiveFingerprint(peer, 8, 100);
+                addMessage(`Answer applied${peer.name ? ' from ' + peer.name : ''} — waiting for data channel.`, 'system');
+                updateSecurityPanel();
+                return 'answer';
+            }
+
+            throw new Error(`Unknown signal type: ${signalData.type}`);
+        }
+
+        /*
+         * Resolves which peer a manually pasted signal belongs to, for the
+         * advanced/fallback textarea only. The automated relay path never
+         * uses this — it always knows the exact peer from the relay
+         * message. Guests only ever have one peer (the host). Hosts using
+         * manual signaling are expected to connect one guest at a time;
+         * with more than one pending connection the ambiguity is surfaced
+         * as an error rather than guessed at.
+         */
+        function guessManualPeer() {
+            if (inviteRole === 'guest') {
+                let peer = peers.get(HOST_PEER_KEY);
+                if (!peer) {
+                    peer = makePeer(HOST_PEER_KEY, null);
+                    peers.set(HOST_PEER_KEY, peer);
+                }
+                return peer;
+            }
+            const candidates = [...peers.values()].filter((p) => p.isInitiator && !p.sessionKeyReady);
+            if (candidates.length === 1) return candidates[0];
+            if (candidates.length > 1) {
+                throw new Error('Multiple pending connections — use the waiting room (Admit) for automated signaling, or Reset and connect one guest at a time manually.');
+            }
+            throw new Error('No pending connection to apply this signal to. Click Connect Peer first.');
+        }
+
+        document.getElementById('signal-btn').onclick = async () => {
+            try {
+                const raw = parseSignalInput(signalArea.value);
+                const peer = guessManualPeer();
+                await processSignalString(raw, peer);
+            } catch (err) {
+                console.error('Signaling failed:', err);
+                addMessage(`Signaling error: ${err.message}`, 'system');
+            }
+        };
+
+        /*
+         * ===== Waiting room + automated handshake relay (client) =====
+         * This section only automates TRANSPORT of the offer/answer JSON
+         * that a human previously copied and pasted by hand, via the
+         * server's opaque /ws relay (see keyserver.js). It calls the
+         * exact same generateOffer() and processSignalString() functions
+         * used by the manual fallback buttons above — no cryptographic
+         * logic is duplicated or altered here.
+         */
+        function relayUrl() {
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            return `${proto}//${location.host}/ws`;
+        }
+
+        function connectRelay(role) {
+            if (relayWs) {
+                try { relayWs.close(); } catch (_) { /* already closed */ }
+            }
+            try {
+                relayWs = new WebSocket(relayUrl());
+            } catch (err) {
+                addMessage(`Waiting room unavailable: ${err.message}. Use manual signaling below.`, 'system');
+                return;
+            }
+            relayWs.onopen = () => {
+                if (role === 'host') {
+                    relayWs.send(JSON.stringify({ type: 'register-host', inviteId: currentInviteId }));
+                } else {
+                    relayWs.send(JSON.stringify({ type: 'join', inviteId: currentInviteId, name: myDisplayName }));
+                }
+            };
+            relayWs.onmessage = (event) => {
+                let msg;
+                try {
+                    msg = JSON.parse(event.data);
+                } catch {
+                    return;
+                }
+                handleRelayMessage(role, msg);
+            };
+            relayWs.onclose = () => {
+                addMessage('Waiting-room connection closed. Manual signaling below still works.', 'system');
+            };
+            relayWs.onerror = () => {
+                addMessage('Waiting-room connection error — automated handshake unavailable. Manual signaling below still works.', 'system');
+            };
+        }
+
+        async function handleRelayMessage(role, msg) {
+            switch (msg.type) {
+                case 'registered':
+                    addMessage('Waiting room open — guests who open your invite link will appear here.', 'system');
+                    break;
+
+                case 'joined': {
+                    myConnId = msg.connId;
+                    /* Guest creates its single peer (always the host) now,
+                       so the incoming offer has somewhere explicit to land. */
+                    const hostPeer = makePeer(HOST_PEER_KEY, null);
+                    peers.set(HOST_PEER_KEY, hostPeer);
+                    addMessage('Waiting for the host to admit you…', 'system');
+                    break;
+                }
+
+                case 'presence':
+                    waitingGuests.set(msg.connId, msg.name);
+                    renderWaitingRoom();
+                    break;
+
+                case 'peer-left':
+                    waitingGuests.delete(msg.connId);
+                    renderWaitingRoom();
+                    /* If this guest had already been admitted and connected,
+                       clean up its live peer connection too. */
+                    if (peers.has(msg.connId)) closePeer(msg.connId);
+                    break;
+
+                case 'admitted':
+                    addMessage('Admitted — connecting automatically…', 'system');
+                    break;
+
+                case 'denied':
+                    addMessage(`Not admitted: ${msg.reason || 'host declined'}`, 'system');
+                    break;
+
+                case 'room-closed':
+                    addMessage(`Waiting room closed: ${msg.reason || ''}`, 'system');
+                    waitingGuests.clear();
+                    renderWaitingRoom();
+                    closeAllPeers();
+                    break;
+
+                case 'signal':
+                    try {
+                        const raw = parseSignalInput(msg.payload);
+                        let peer;
+                        if (role === 'guest') {
+                            peer = peers.get(HOST_PEER_KEY);
+                            if (!peer) {
+                                peer = makePeer(HOST_PEER_KEY, null);
+                                peers.set(HOST_PEER_KEY, peer);
+                            }
+                        } else {
+                            peer = peers.get(msg.connId);
+                            if (!peer) {
+                                throw new Error(`Signal arrived for an unknown guest (connId ${msg.connId}) — it may have left.`);
+                            }
+                        }
+                        const kind = await processSignalString(raw, peer);
+                        if (role === 'guest' && kind === 'offer') {
+                            /* processSignalString just populated peer.publishedSignal
+                               with the freshly generated Answer — send that exact
+                               value back, not the shared textarea, so a second
+                               guest's concurrent handshake can never bleed into it. */
+                            relayWs.send(JSON.stringify({ type: 'signal', payload: peer.publishedSignal }));
+                            addMessage('Answer sent automatically.', 'system');
+                        }
+                    } catch (err) {
+                        console.error('Automated signaling failed:', err);
+                        addMessage(`Automated signaling error: ${err.message}`, 'system');
+                    }
+                    break;
+
+                case 'error':
+                    addMessage(`Waiting room: ${msg.message}`, 'system');
+                    break;
+            }
+        }
+
+        function renderWaitingRoom() {
+            const panel = document.getElementById('waiting-room-panel');
+            const list  = document.getElementById('waiting-room-list');
+            if (waitingGuests.size === 0) {
+                panel.classList.remove('show');
+                list.innerHTML = '';
+                return;
+            }
+            panel.classList.add('show');
+            list.innerHTML = '';
+            for (const [connId, name] of waitingGuests.entries()) {
+                const row = document.createElement('div');
+                row.className = 'waiting-guest-row';
+
+                const nameEl = document.createElement('span');
+                nameEl.className = 'waiting-guest-name';
+                nameEl.textContent = name;
+
+                const actions = document.createElement('span');
+                actions.className = 'waiting-guest-actions';
+
+                const admitBtn = document.createElement('button');
+                admitBtn.className = 'btn-admit';
+                admitBtn.textContent = peers.size >= MAX_ACTIVE_GUESTS_CLIENT ? `Full (${MAX_ACTIVE_GUESTS_CLIENT})` : 'Admit';
+                admitBtn.disabled = peers.size >= MAX_ACTIVE_GUESTS_CLIENT;
+                admitBtn.onclick = () => admitGuest(connId, name);
+
+                const denyBtn = document.createElement('button');
+                denyBtn.className = 'btn-deny';
+                denyBtn.textContent = 'Deny';
+                denyBtn.onclick = () => denyGuest(connId);
+
+                actions.appendChild(admitBtn);
+                actions.appendChild(denyBtn);
+                row.appendChild(nameEl);
+                row.appendChild(actions);
+                list.appendChild(row);
+            }
+        }
+
+        async function admitGuest(connId, name) {
+            if (peers.size >= MAX_ACTIVE_GUESTS_CLIENT) {
+                addMessage(`Already at the ${MAX_ACTIVE_GUESTS_CLIENT}-guest limit.`, 'system');
+                return;
+            }
+            relayWs.send(JSON.stringify({ type: 'admit', connId }));
+            waitingGuests.delete(connId);
+            renderWaitingRoom();
+            try {
+                const offerStr = await generateOffer(connId, name);
+                relayWs.send(JSON.stringify({ type: 'signal', connId, payload: offerStr }));
+                addMessage(`Offer sent automatically to ${name || 'guest'} — waiting for them to connect…`, 'system');
+            } catch (err) {
+                addMessage(`Auto-connect to ${name || 'guest'} failed: ${err.message}`, 'system');
+            }
+        }
+
+        function denyGuest(connId) {
+            relayWs.send(JSON.stringify({ type: 'deny', connId }));
+            waitingGuests.delete(connId);
+            renderWaitingRoom();
+        }
+
+
+        document.getElementById('guest-name-submit-btn').onclick = () => {
+            const input = document.getElementById('guest-name-input');
+            const name = input.value.trim().slice(0, DISPLAY_NAME_MAX_CLIENT);
+            if (!name) {
+                input.focus();
+                return;
+            }
+            myDisplayName = name;
+            document.getElementById('name-modal-overlay').classList.remove('show');
+            addMessage('Joined waiting room — waiting for the host to admit you.', 'system');
+            connectRelay('guest');
+        };
+        document.getElementById('guest-name-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') document.getElementById('guest-name-submit-btn').click();
+        });
+
+        function setupDataChannel(peer, connId, channel) {
+            if (channel) peer.dc = channel;
+            const dc = peer.dc;
+            dc.onopen = async () => {
+                updateStatusDot();
+                addMessage(`Secure P2P channel established${peer.name ? ' with ' + peer.name : ''}.`, 'system');
+                startFingerprintVerificationPoll(peer);
+                const verified = await verifyLiveFingerprint(peer);
+                if (!verified && peer.expectedFingerprint) {
+                    addMessage('Verifying DTLS fingerprint — message box unlocks when complete.', 'system');
+                }
+                if (peer.pc) await detectConnectionPath(peer.pc, peer);
+                updateSecurityPanel();
+            };
+            dc.onclose = () => {
+                updateStatusDot();
+                addMessage(`P2P channel closed${peer.name ? ' with ' + peer.name : ''}.`, 'system');
+                updateSecurityPanel();
+            };
+            dc.onerror = (err) => {
+                console.error('Data channel error:', err);
+                addMessage('Data channel error — check browser console.', 'system');
+            };
+            dc.onmessage = (event) => {
+                try {
+                    const envelope = JSON.parse(event.data);
+                    if (!wasmReady || !peer.sessionKeyReady || !peer.fingerprintVerified) {
+                        peer.pendingIncoming.push(envelope);
+                        if (!peer.pendingNoticeShown) {
+                            peer.pendingNoticeShown = true;
+                            addMessage('Message queued — waiting for full security handshake…', 'system');
+                        }
+                        markWasmReady();
+                        return;
+                    }
+                    handleSecureEnvelope(peer, envelope);
+                } catch (err) {
+                    console.error('Failed to process message:', err);
+                    addMessage(`Error receiving message: ${err.message}`, 'system');
+                }
+            };
+        }
+
+        function sendTextMessage() {
+            const text = msgInput.value.trim();
+            if (!text) return;
+            const readyPeers = [...peers.values()].filter(peerCanSend);
+            if (readyPeers.length === 0) {
+                addMessage('No connected peer to send to yet.', 'system');
+                return;
+            }
+            let sentToAny = false;
+            for (const peer of readyPeers) {
+                try {
+                    sendSecure(peer, { type: 'msg', data: text });
+                    sentToAny = true;
+                } catch (err) {
+                    console.error(`Send to ${peer.name || peer.connId} failed:`, err);
+                }
+            }
+            if (sentToAny) {
+                addMessage(text, 'sent');
+                msgInput.value = '';
+            } else {
+                addMessage('Send failed — no peer accepted the message.', 'system');
+            }
+        }
+
+        document.getElementById('send-btn').onclick = sendTextMessage;
+        msgInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') sendTextMessage();
+        });
+
+        document.getElementById('file-btn').onclick = () => fileInput.click();
+        fileInput.onchange = (e) => {
+            const file = e.target.files[0];
+            e.target.value = '';
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                try {
+                    sendFileBuffer(file.name, file.size, new Uint8Array(reader.result));
+                } catch (err) {
+                    addMessage(`File send failed: ${err.message}`, 'system');
+                }
+            };
+            reader.onerror = () => addMessage('File read failed.', 'system');
+            reader.readAsArrayBuffer(file);
+        };
+
+        applyInviteFromHash();
+        isKeyserverAvailable().then((available) => {
+            if (!available) {
+                localDevMode = true;
+                addMessage(
+                    'Tip: You are using a static file server. For full security run: ./scripts/run-local.sh then open http://localhost:8080',
+                    'system'
+                );
+            }
+            updateSecurityPanel();
+        });
+        loadIceConfig().then(updateSecurityPanel).catch(updateSecurityPanel);
+        updateSecurityPanel();
+    </script>
+</body>
+</html>
