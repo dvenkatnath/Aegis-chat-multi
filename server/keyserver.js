@@ -597,8 +597,8 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Aegis keyserver listening on :${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Aegis keyserver listening on 0.0.0.0:${PORT}`);
   console.log(`  CORS_ORIGIN : ${CORS_ORIGIN || '* (dev mode)'}`);
   console.log(`  NODE_ENV    : ${NODE_ENV}`);
   console.log(`  WS relay    : ws://<host>:${PORT}/ws  (waiting room + handshake automation)`);

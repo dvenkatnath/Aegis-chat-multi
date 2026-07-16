@@ -21,7 +21,6 @@ COPY assets/icons/favicon-192.png /app/dist/favicon-192.png
 
 ENV DATA_DIR=/app/data
 ENV STATIC_DIR=/app/dist
-ENV NODE_ENV=production
 
 EXPOSE 8080
-CMD ["./start.sh"]
+CMD ["sh", "./start.sh"]

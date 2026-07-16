@@ -8,7 +8,40 @@ Single-service deploy: Node keyserver serves the static app (`dist/`) plus `/api
 - GitHub repo: `dvenkatnath/Aegis-chat-multi`
 - Authenticated CLI: `railway login`
 
-## Get your public link
+## Generate Domain is disabled?
+
+Railway only enables **Generate Domain** when the service is **deployed and listening on HTTP**. Check these in order:
+
+### 1. Confirm the deployment is healthy
+- Open your **service** (not just the project) → **Deployments**
+- Latest deploy must be **Success** / green
+- Open **Logs** — you should see: `Aegis keyserver listening on 0.0.0.0:XXXX`
+- If logs show `FATAL: CORS_ORIGIN` or crash loops, redeploy after the latest Git push
+
+### 2. Remove TCP Proxy (most common UI blocker)
+If a **TCP Proxy** exists under **Settings → Networking**, **Generate Domain** is hidden.
+- Click the **trash icon** next to the TCP Proxy to remove it
+- Then **Generate Domain** should appear
+
+### 3. Do not set PORT manually (unless required)
+- In **Variables**, **delete** any `PORT` variable you added yourself
+- Let Railway inject `PORT` automatically
+- Our app reads `process.env.PORT` at runtime
+
+### 4. Try the canvas prompt instead
+Sometimes the button in Settings is disabled, but the **service tile** on the project canvas shows **"Generate Domain"** after a healthy deploy. Click the service box on the canvas and look for that prompt.
+
+### 5. Use CLI as fallback
+```bash
+railway login
+cd /path/to/Aegis-chat-multi
+railway link --project Aegis-chat-multi
+railway domain --json
+```
+
+### 6. India ISP note
+Some Indian ISPs block `*.up.railway.app`. If the domain generates but won't load, add a **Custom Domain** via Cloudflare instead.
+
 
 Railway does **not** assign a URL automatically. After the first successful deploy:
 
