@@ -223,16 +223,36 @@
                 iceTransportPolicy: 'all'
             };
             const servers = cfg.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }];
-            /* Extra STUN servers help iOS Safari gather usable srflx/host candidates */
-            const urls = new Set();
+            const stunUrls = new Set([
+                'stun:stun.l.google.com:19302',
+                'stun:stun1.l.google.com:19302'
+            ]);
+            const turnServers = [];
+
             for (const entry of servers) {
                 const list = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
-                list.forEach((u) => urls.add(u));
+                const turnUrls = [];
+                for (const url of list) {
+                    if (url.startsWith('stun:')) {
+                        stunUrls.add(url);
+                    } else if (url.startsWith('turn:') || url.startsWith('turns:')) {
+                        turnUrls.push(url);
+                    }
+                }
+                if (turnUrls.length === 0) continue;
+                if (entry.username && entry.credential) {
+                    turnServers.push({
+                        urls: turnUrls.length === 1 ? turnUrls[0] : turnUrls,
+                        username: entry.username,
+                        credential: entry.credential
+                    });
+                } else {
+                    console.warn('TURN URLs omitted — missing username/credential', turnUrls);
+                }
             }
-            urls.add('stun:stun.l.google.com:19302');
-            urls.add('stun:stun1.l.google.com:19302');
+
             return {
-                iceServers: [{ urls: [...urls] }, ...servers.filter((s) => s.username)],
+                iceServers: [{ urls: [...stunUrls] }, ...turnServers],
                 iceTransportPolicy: cfg.iceTransportPolicy || 'all',
                 bundlePolicy: 'max-bundle',
                 rtcpMuxPolicy: 'require'
