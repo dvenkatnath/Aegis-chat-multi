@@ -406,7 +406,7 @@
                 }
                 addMessage(
                     'Secure channel timed out. On both tabs: click Reset, hard-refresh (Ctrl+Shift+R), host re-admits guest. '
-                    + 'If Chrome shows a local-network permission prompt, click Allow.',
+                    + 'If Chrome shows a local-network permission banner, click Allow.',
                     'system'
                 );
                 updateSecurityPanel();
@@ -1010,7 +1010,7 @@
                         if (await retryPeerIce(peer, true)) return;
                     }
                     addMessage(
-                        'ICE connection failed. On Chrome: check chrome://settings/content/localNetworkAccess and allow this site, or hard-refresh both tabs.',
+                        'ICE connection failed. Hard-refresh both tabs. If Chrome asks to access your local network, click Allow.',
                         'system'
                     );
                 }
