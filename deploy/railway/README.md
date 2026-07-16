@@ -84,11 +84,10 @@ curl -s https://YOUR-DOMAIN.up.railway.app/health
 | `NODE_ENV` | `production` |
 | `CORS_ORIGIN` | `https://${{RAILWAY_PUBLIC_DOMAIN}}` (or your custom domain) |
 | `LOG_SECRET` | `openssl rand -hex 32` |
-| `TURN_SECRET` | coturn `static-auth-secret`, or `openrelayprojectsecret` for [Open Relay](https://www.metered.ca/tools/openrelay/) |
-| `TURN_HOST` | e.g. `staticauth.openrelay.metered.ca` (Railway default via `start.sh`) |
-| `TURN_PORT` | `80` or `3478` depending on provider |
-| `TURN_USERNAME` / `TURN_CREDENTIAL` | Optional static creds instead of HMAC (Metered dashboard) |
-| `TURN_PUBLIC_HOST` | Hostname for static creds when different from `TURN_HOST` |
+| `METERED_APP_NAME` | Your Metered subdomain (e.g. `myapp` for `myapp.metered.live`) — **required for TURN on Railway** |
+| `METERED_SECRET_KEY` | From [metered.ca](https://www.metered.ca/tools/openrelay/) → Developers → Secret Key |
+| `METERED_TURN_API_KEY` | Optional alternative to secret key (per-credential API key from dashboard) |
+| `TURN_SECRET` / `TURN_HOST` | Optional self-hosted coturn (Docker Compose deploy) |
 
 `start.sh` auto-sets `CORS_ORIGIN` from `RAILWAY_PUBLIC_DOMAIN` when omitted.
 
@@ -98,5 +97,5 @@ Attach a Railway volume at `/app/data` so `keys.json` survives redeploys.
 
 ## Notes
 
-- TURN/coturn from `deploy/docker-compose.yml` is **not** included on Railway. **`start.sh` defaults to Metered Open Relay** (`staticauth.openrelay.metered.ca`) so ICE can traverse strict NAT/firewalls. Override with your own TURN env vars for production.
+- TURN on Railway requires a **free [Metered Open Relay](https://www.metered.ca/tools/openrelay/)** account. Set `METERED_APP_NAME` + `METERED_SECRET_KEY` in Railway variables. The old static `openrelayprojectsecret` auth no longer produces relay candidates in browsers.
 - Health check: `GET /health`

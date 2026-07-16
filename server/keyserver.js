@@ -62,6 +62,9 @@ const TURN_HOST        = process.env.TURN_HOST   || 'turn';
 const TURN_PORT        = process.env.TURN_PORT   || '3478';
 const TURN_USERNAME    = process.env.TURN_USERNAME || '';
 const TURN_CREDENTIAL  = process.env.TURN_CREDENTIAL || '';
+const METERED_APP_NAME   = process.env.METERED_APP_NAME || '';
+const METERED_SECRET_KEY = process.env.METERED_SECRET_KEY || '';
+const METERED_TURN_API_KEY = process.env.METERED_TURN_API_KEY || '';
 const LOG_SECRET       = process.env.LOG_SECRET  || crypto.randomBytes(32).toString('hex');
 const STUN_URL         = process.env.STUN_URL    || 'stun:stun.l.google.com:19302';
 const CORS_ORIGIN      = process.env.CORS_ORIGIN || '';
@@ -218,6 +221,102 @@ function buildIceServers() {
   }
 
   return iceServers;
+}
+
+/* ---------- Metered managed TURN (Open Relay free tier via REST API) ---------- */
+let meteredIceCache = null;
+
+function buildGlobalRelayIceServers(username, credential) {
+  return [
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    {
+      urls: [
+        'turn:global.relay.metered.ca:80',
+        'turn:global.relay.metered.ca:80?transport=tcp',
+        'turn:global.relay.metered.ca:443',
+        'turns:global.relay.metered.ca:443?transport=tcp',
+      ],
+      username,
+      credential,
+    },
+  ];
+}
+
+async function fetchMeteredIceServers() {
+  if (meteredIceCache && Date.now() < meteredIceCache.expiresAt) {
+    return meteredIceCache.payload;
+  }
+
+  const app = METERED_APP_NAME.trim();
+  if (!app) return null;
+
+  if (METERED_TURN_API_KEY) {
+    const url = `https://${app}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(METERED_TURN_API_KEY)}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) throw new Error(`Metered credentials API HTTP ${res.status}`);
+    const data = await res.json();
+    const iceServers = Array.isArray(data) ? data : data.iceServers;
+    if (!Array.isArray(iceServers) || iceServers.length === 0) {
+      throw new Error('Metered credentials API returned empty iceServers');
+    }
+    const payload = { iceServers, iceTransportPolicy: 'all', turnSource: 'metered-api' };
+    meteredIceCache = { payload, expiresAt: Date.now() + 23 * 60 * 60 * 1000 };
+    return payload;
+  }
+
+  if (METERED_SECRET_KEY) {
+    const url = `https://${app}.metered.live/api/v1/turn/credential?secretKey=${encodeURIComponent(METERED_SECRET_KEY)}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: `aegis-${Math.floor(Date.now() / 1000)}` }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) throw new Error(`Metered credential create HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.username || !data.password) {
+      throw new Error('Metered credential response missing username/password');
+    }
+    const payload = {
+      iceServers: buildGlobalRelayIceServers(data.username, data.password),
+      iceTransportPolicy: 'all',
+      turnSource: 'metered-secret',
+    };
+    meteredIceCache = { payload, expiresAt: Date.now() + 23 * 60 * 60 * 1000 };
+    return payload;
+  }
+
+  return null;
+}
+
+async function buildIceConfigResponse() {
+  try {
+    const metered = await fetchMeteredIceServers();
+    if (metered) return metered;
+  } catch (err) {
+    console.warn('Metered TURN fetch failed:', err.message);
+  }
+
+  const iceServers = buildIceServers();
+  const hasTurn = iceServers.some((entry) => {
+    const list = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
+    return list.some((u) => String(u).startsWith('turn'));
+  });
+
+  const payload = {
+    iceServers,
+    iceTransportPolicy: 'all',
+    turnSource: hasTurn ? 'static-hmac' : 'stun-only',
+  };
+
+  if (hasTurn && TURN_HOST.includes('openrelay')) {
+    payload.turnWarning =
+      'TURN relay not configured — server admin must set METERED_APP_NAME + METERED_SECRET_KEY on Railway (free at metered.ca/tools/openrelay).';
+  } else if (!hasTurn) {
+    payload.turnWarning = 'No TURN relay on server — connections may fail across networks.';
+  }
+
+  return payload;
 }
 
 /* ---------- Express app ---------- */
@@ -395,11 +494,13 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'aegis-keyserver' });
 });
 
-app.get('/api/ice-config', (_req, res) => {
-  res.json({
-    iceServers: buildIceServers(),
-    iceTransportPolicy: 'all'
-  });
+app.get('/api/ice-config', async (_req, res) => {
+  try {
+    res.json(await buildIceConfigResponse());
+  } catch (err) {
+    console.error('ice-config error:', err);
+    res.status(500).json({ error: 'ice-config unavailable' });
+  }
 });
 
 app.post('/api/v1/keys', rateLimit, (req, res) => {
@@ -684,8 +785,10 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  CORS_ORIGIN : ${CORS_ORIGIN || '* (dev mode)'}`);
   console.log(`  NODE_ENV    : ${NODE_ENV}`);
   console.log(`  WS relay    : ws://<host>:${PORT}/ws  (waiting room + handshake automation)`);
-  if (!TURN_SECRET && !TURN_USERNAME) {
-    console.warn('  WARNING: TURN not configured — STUN-only ICE (strict NAT / firewalls may fail).');
+  if (!TURN_SECRET && !TURN_USERNAME && !METERED_APP_NAME) {
+    console.warn('  WARNING: No TURN configured. Set METERED_APP_NAME + METERED_SECRET_KEY (free at metered.ca/tools/openrelay).');
+  } else if (METERED_APP_NAME) {
+    console.log(`  TURN relay  : Metered (${METERED_APP_NAME}.metered.live)`);
   } else if (TURN_SECRET) {
     console.log(`  TURN relay  : ${TURN_HOST}:${TURN_PORT} (HMAC credentials)`);
   } else {

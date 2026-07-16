@@ -139,6 +139,7 @@
         let wasmReady = false;
         let keyTransparencyOk = false;
         let iceConfigCache = null;
+        let iceConfigWarningShown = false;
         let localDevMode = false;
         let currentInviteId = null;
         let inviteRole = null;
@@ -301,6 +302,10 @@
                 const response = await fetch('/api/ice-config', { cache: 'no-store' });
                 if (response.ok) {
                     iceConfigCache = await response.json();
+                    if (iceConfigCache.turnWarning && !iceConfigWarningShown) {
+                        iceConfigWarningShown = true;
+                        addMessage(iceConfigCache.turnWarning, 'system');
+                    }
                     return iceConfigCache;
                 }
             } catch (_) {
@@ -982,8 +987,8 @@
                     peer.connectionPath = 'unknown';
                     if (!peer.iceRestartAttempted && iceConfigHasTurn(iceConfigCache)) {
                         peer.iceRestartAttempted = true;
-                        addMessage('Direct path failed — retrying via TURN relay…', 'system');
-                        if (await retryPeerIce(peer, true)) {
+                        addMessage('Connection failed — retrying ICE…', 'system');
+                        if (await retryPeerIce(peer, false)) {
                             updateSecurityPanel();
                             return;
                         }
@@ -1006,8 +1011,8 @@
                 if (pc.iceConnectionState === 'failed') {
                     if (!peer.iceRestartAttempted && iceConfigHasTurn(iceConfigCache)) {
                         peer.iceRestartAttempted = true;
-                        addMessage('ICE failed — switching to TURN relay…', 'system');
-                        if (await retryPeerIce(peer, true)) return;
+                        addMessage('ICE failed — retrying…', 'system');
+                        if (await retryPeerIce(peer, false)) return;
                     }
                     addMessage(
                         'ICE connection failed. Hard-refresh both tabs. If Chrome asks to access your local network, click Allow.',
@@ -1653,7 +1658,10 @@
                 await new Promise((resolve) => setTimeout(resolve, 300));
             }
             if (!sdpHasRelayCandidate(pc.localDescription?.sdp || '')) {
-                addMessage('No TURN relay in local candidates — will try direct/STUN paths too.', 'system');
+                addMessage(
+                    'No TURN relay candidates gathered — P2P may fail until server TURN is configured (Metered API on Railway).',
+                    'system'
+                );
             }
         }
 
