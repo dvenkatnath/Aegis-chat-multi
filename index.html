@@ -342,6 +342,29 @@
                 && peer.dc && peer.dc.readyState === 'open';
         }
 
+        function peerReadyForSafetyConfirm(peer) {
+            return peer.sessionKeyReady && peer.fingerprintVerified
+                && peer.dc && peer.dc.readyState === 'open';
+        }
+
+        function getSendBlockers() {
+            const blockers = [];
+            if (!wasmReady) blockers.push('encryption module');
+            if (!roomSecretValid()) blockers.push('room secret');
+            if (!currentInviteId) blockers.push('invite link');
+            if (!keyTransparencyOk) blockers.push('key transparency');
+            if (peers.size === 0) {
+                blockers.push('peer connection');
+                return blockers;
+            }
+            const peer = [...peers.values()][0];
+            if (!peer.sessionKeyReady) blockers.push('session key');
+            if (!peer.fingerprintVerified) blockers.push('DTLS fingerprint');
+            if (!peer.dc || peer.dc.readyState !== 'open') blockers.push('P2P channel');
+            if (!peer.safetyConfirmed) blockers.push('safety code');
+            return blockers;
+        }
+
         function updateSecurityPanel() {
             document.getElementById('sec-wasm').innerHTML = wasmReady
                 ? '<span class="ok">✓ WASM ready</span>'
@@ -368,10 +391,11 @@
             fileBtn.disabled = !canSend;
             if (canSend) {
                 msgInput.placeholder = 'Type secure message…';
-            } else if (peers.size > 0) {
-                msgInput.placeholder = 'Waiting for a peer to finish the secure handshake…';
             } else {
-                msgInput.placeholder = 'Type secure message… (connect first)';
+                const blockers = getSendBlockers();
+                msgInput.placeholder = blockers.length
+                    ? `Waiting for: ${blockers.join(', ')}…`
+                    : 'Type secure message… (connect first)';
             }
         }
 
@@ -438,12 +462,25 @@
 
                     const confirmBtn = document.createElement('button');
                     confirmBtn.className = 'peer-safety-confirm-btn';
-                    confirmBtn.textContent = peer.safetyConfirmed ? 'Confirmed ✓' : 'Confirm — codes match';
-                    confirmBtn.disabled = peer.safetyConfirmed;
-                    confirmBtn.onclick = () => {
+                    confirmBtn.textContent = peer.safetyConfirmed
+                        ? 'Confirmed ✓'
+                        : peerReadyForSafetyConfirm(peer)
+                            ? 'Confirm — codes match'
+                            : 'Waiting for secure channel…';
+                    confirmBtn.disabled = peer.safetyConfirmed || !peerReadyForSafetyConfirm(peer);
+                    confirmBtn.onclick = async () => {
+                        if (!peerReadyForSafetyConfirm(peer)) {
+                            addMessage('Wait for P2P channel open and DTLS verified before confirming.', 'system');
+                            return;
+                        }
                         peer.safetyConfirmed = true;
                         updateSecurityPanel();
-                        addMessage(`Safety check confirmed with ${peer.name || 'peer'} — unlocked.`, 'system');
+                        if (peerCanSend(peer) && wasmReady && keyTransparencyOk) {
+                            addMessage(`Safety check confirmed with ${peer.name || 'peer'} — unlocked.`, 'system');
+                        } else {
+                            const missing = getSendBlockers().join(', ');
+                            addMessage(`Safety code confirmed — still waiting for: ${missing}.`, 'system');
+                        }
                     };
                     card.appendChild(confirmBtn);
                 }

@@ -10,7 +10,7 @@ COPY deploy/railway/start.sh ./start.sh
 RUN chmod +x ./start.sh
 
 RUN mkdir -p /app/dist
-COPY index.html ice-config.js cyberknot.js /app/dist/
+COPY index.html ice-config.js cyberknot.js cyberknot.wasm /app/dist/
 COPY assets/favicon.svg /app/dist/favicon.svg
 COPY assets/icons/favicon-16.png /app/dist/favicon-16.png
 COPY assets/icons/favicon-32.png /app/dist/favicon-32.png
