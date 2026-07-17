@@ -194,6 +194,7 @@
                 connectWatchdogTimer: null,
                 connectStatusTimer: null,
                 remoteIceQueue: [],
+                pendingLocalIce: [],
                 trickleIce: false,
                 iceGatheringDone: false,
                 name: name || null
@@ -216,6 +217,7 @@
         const INVITE_TTL_MS = 24 * 60 * 60 * 1000;
         const DISPLAY_NAME_MAX_CLIENT = 40; /* matches server DISPLAY_NAME_MAX */
         const TRICKLE_PUBLISH_MS = 1200;    /* send offer/answer after first ICE candidates, not full gather */
+        const TURN_TRICKLE_WAIT_MS = 8000;  /* wait for TURN relay candidates before publishing when TURN configured */
 
         const chatBox = document.getElementById('chat-box');
         const msgInput = document.getElementById('msg-input');
@@ -304,6 +306,11 @@
             const ua = navigator.userAgent;
             return (/iPhone|iPad|iPod/i.test(ua) && /Safari/i.test(ua))
                 || (/Safari/i.test(ua) && !/Chrome|CriOS|FxiOS|EdgiOS/i.test(ua) && /Mobile/i.test(ua));
+        }
+
+        function isSafari() {
+            const ua = navigator.userAgent;
+            return /Safari/i.test(ua) && !/Chrome|CriOS|FxiOS|EdgiOS|Chromium/i.test(ua);
         }
 
         async function loadIceConfig(force = false) {
@@ -450,12 +457,15 @@
                 if (!peer.iceRestartAttempted) {
                     peer.iceRestartAttempted = true;
                     const cfg = await buildRtcConfig();
-                    cfg.iceTransportPolicy = 'all';
+                    cfg.iceTransportPolicy = preferTurnRelay() && iceConfigHasTurn(iceConfigCache)
+                        ? 'relay'
+                        : 'all';
                     try {
                         peer.pc.setConfiguration(cfg);
                         if (typeof peer.pc.restartIce === 'function') {
                             peer.pc.restartIce();
                         }
+                        flushPendingLocalIce(peer);
                     } catch (err) {
                         console.warn('ICE watchdog restart failed:', err);
                     }
@@ -463,12 +473,12 @@
                     return;
                 }
                 addMessage(
-                    'Secure channel timed out. On both tabs: click Reset, hard-refresh (Ctrl+Shift+R), host re-admits guest. '
-                    + 'If Chrome shows a local-network permission banner, click Allow.',
+                    'Secure channel timed out. On both tabs: click Reset, hard-refresh (Cmd+Shift+R), host re-admits guest. '
+                    + 'Keep Safari/Chrome in the foreground and disable VPN.',
                     'system'
                 );
                 updateSecurityPanel();
-            }, 35000);
+            }, isSafari() ? 45000 : 35000);
         }
 
         function relayTrickleEnabled() {
@@ -482,6 +492,14 @@
                 body.connId = peer.connId;
             }
             relayWs.send(JSON.stringify(body));
+        }
+
+        function flushPendingLocalIce(peer) {
+            if (!peer.trickleIce || !peer.pendingLocalIce?.length) return;
+            const pending = peer.pendingLocalIce.splice(0);
+            for (const init of pending) {
+                sendRelayIceCandidate(peer, init);
+            }
         }
 
         async function addRemoteIceCandidate(peer, candidateInit) {
@@ -525,12 +543,58 @@
             });
         }
 
+        function waitForTricklePublish(pc) {
+            const hasTurn = iceConfigHasTurn(iceConfigCache);
+            if (!hasTurn) {
+                return waitForEarlyIcePublish(pc, TRICKLE_PUBLISH_MS);
+            }
+            const maxMs = isSafari() ? Math.max(TURN_TRICKLE_WAIT_MS, 12000) : TURN_TRICKLE_WAIT_MS;
+            if (pc.iceGatheringState === 'complete') {
+                return Promise.resolve();
+            }
+            return new Promise((resolve) => {
+                let finished = false;
+                const finish = () => {
+                    if (finished) return;
+                    finished = true;
+                    pc.removeEventListener('icecandidate', onCandidate);
+                    pc.removeEventListener('icegatheringstatechange', onGathering);
+                    clearTimeout(timer);
+                    resolve();
+                };
+                const checkRelay = () => {
+                    const sdp = pc.localDescription?.sdp || '';
+                    if (sdpHasRelayCandidate(sdp)) finish();
+                };
+                const onCandidate = (event) => {
+                    if (!event.candidate) finish();
+                    else checkRelay();
+                };
+                const onGathering = () => {
+                    if (pc.iceGatheringState === 'complete') finish();
+                    else checkRelay();
+                };
+                pc.addEventListener('icecandidate', onCandidate);
+                pc.addEventListener('icegatheringstatechange', onGathering);
+                const timer = setTimeout(() => {
+                    if (!sdpHasRelayCandidate(pc.localDescription?.sdp || '')) {
+                        addMessage(
+                            'TURN relay still gathering — cross-network connect may take up to a minute. Keep both tabs open.',
+                            'system'
+                        );
+                    }
+                    finish();
+                }, maxMs);
+                checkRelay();
+            });
+        }
+
         async function ensureSignalPublished(peer, label) {
             if (peer.signalPublished) return peer.publishedSignal;
             if (peer.trickleIce) {
-                await waitForEarlyIcePublish(peer.pc);
+                await waitForTricklePublish(peer.pc);
             } else {
-                await waitForIceGatheringComplete(peer.pc, isMobileSafari() ? 20000 : 10000);
+                await waitForIceGatheringAndRelay(peer.pc, isSafari() ? 20000 : 10000);
             }
             if (!peer.signalPublished) {
                 await publishLocalSignal(peer, label);
@@ -1107,16 +1171,16 @@
                     peer.connectionPath = 'unknown';
                     if (!peer.iceRestartAttempted && iceConfigHasTurn(iceConfigCache)) {
                         peer.iceRestartAttempted = true;
-                        addMessage('Connection failed — retrying ICE…', 'system');
-                        if (await retryPeerIce(peer, false)) {
+                        addMessage('Connection failed — retrying via TURN relay…', 'system');
+                        if (await retryPeerIce(peer, preferTurnRelay())) {
                             updateSecurityPanel();
                             return;
                         }
                     }
                     addMessage(
                         preferTurnRelay()
-                            ? 'P2P connection failed after TURN retry. Hard-refresh both tabs (Ctrl+Shift+R), disable VPN, and check that Chrome allows this site to use the network.'
-                            : 'P2P connection failed. Keep both tabs open, disable VPN, and allow Chrome local-network access if prompted.',
+                            ? 'P2P connection failed after TURN retry. Hard-refresh both tabs (Cmd+Shift+R), disable VPN, and try again on Wi‑Fi (not cellular).'
+                            : 'P2P connection failed. Keep both tabs open, disable VPN, and allow browser local-network access if prompted.',
                         'system'
                     );
                     updateSecurityPanel();
@@ -1131,11 +1195,11 @@
                 if (pc.iceConnectionState === 'failed') {
                     if (!peer.iceRestartAttempted && iceConfigHasTurn(iceConfigCache)) {
                         peer.iceRestartAttempted = true;
-                        addMessage('ICE failed — retrying…', 'system');
-                        if (await retryPeerIce(peer, false)) return;
+                        addMessage('ICE failed — retrying via TURN relay…', 'system');
+                        if (await retryPeerIce(peer, preferTurnRelay())) return;
                     }
                     addMessage(
-                        'ICE connection failed. Hard-refresh both tabs. If Chrome asks to access your local network, click Allow.',
+                        'ICE connection failed. Hard-refresh both tabs (Cmd+Shift+R). Disable VPN and try Wi‑Fi on both devices.',
                         'system'
                     );
                 }
@@ -1803,13 +1867,17 @@
 
         async function retryPeerIce(peer, relayOnly = false) {
             if (!peer.pc || peer.pc.connectionState === 'closed') return false;
+            await loadIceConfig(true);
             const cfg = await buildRtcConfig();
-            if (relayOnly) cfg.iceTransportPolicy = 'relay';
+            if (relayOnly && iceConfigHasTurn(iceConfigCache)) {
+                cfg.iceTransportPolicy = 'relay';
+            }
             try {
                 peer.pc.setConfiguration(cfg);
                 if (peer.isInitiator && typeof peer.pc.restartIce === 'function') {
                     peer.pc.restartIce();
                 }
+                flushPendingLocalIce(peer);
                 return true;
             } catch (err) {
                 console.warn('ICE restart failed:', err);
@@ -1836,16 +1904,23 @@
             signalArea.value = wrapped;     /* informational only, for the manual-fallback UI */
             signalArea.scrollTop = 0;
             peer.signalPublished = true;
+            flushPendingLocalIce(peer);
             addMessage(`${label} ready${peer.name ? ' for ' + peer.name : ''} — select all (Cmd+A) and copy if using manual signaling.`, 'system');
             return wrapped;
         }
 
         function bindIceCandidateHandler(peer) {
             peer.remoteIceQueue = peer.remoteIceQueue || [];
+            peer.pendingLocalIce = peer.pendingLocalIce || [];
             peer.pc.onicecandidate = async (event) => {
                 if (event.candidate) {
-                    if (peer.trickleIce && peer.signalPublished) {
-                        sendRelayIceCandidate(peer, event.candidate.toJSON());
+                    const init = event.candidate.toJSON();
+                    if (peer.trickleIce) {
+                        if (peer.signalPublished) {
+                            sendRelayIceCandidate(peer, init);
+                        } else {
+                            peer.pendingLocalIce.push(init);
+                        }
                     }
                     return;
                 }
