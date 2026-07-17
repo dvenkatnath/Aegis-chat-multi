@@ -226,6 +226,12 @@ function buildIceServers() {
 /* ---------- Metered managed TURN (Open Relay free tier via REST API) ---------- */
 let meteredIceCache = null;
 
+function meteredAppSubdomain() {
+  const raw = METERED_APP_NAME.trim();
+  if (!raw) return '';
+  return raw.replace(/\.metered\.live\/?$/i, '');
+}
+
 function buildGlobalRelayIceServers(username, credential) {
   return [
     { urls: 'stun:stun.relay.metered.ca:80' },
@@ -247,7 +253,7 @@ async function fetchMeteredIceServers() {
     return meteredIceCache.payload;
   }
 
-  const app = METERED_APP_NAME.trim();
+  const app = meteredAppSubdomain();
   if (!app) return null;
 
   if (METERED_TURN_API_KEY) {
@@ -272,8 +278,11 @@ async function fetchMeteredIceServers() {
       body: JSON.stringify({ label: `aegis-${Math.floor(Date.now() / 1000)}` }),
       signal: AbortSignal.timeout(15000),
     });
-    if (!res.ok) throw new Error(`Metered credential create HTTP ${res.status}`);
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = data.message || data.error || `HTTP ${res.status}`;
+      throw new Error(`Metered credential create failed: ${msg}`);
+    }
     if (!data.username || !data.password) {
       throw new Error('Metered credential response missing username/password');
     }
@@ -290,10 +299,12 @@ async function fetchMeteredIceServers() {
 }
 
 async function buildIceConfigResponse() {
+  let meteredError = null;
   try {
     const metered = await fetchMeteredIceServers();
     if (metered) return metered;
   } catch (err) {
+    meteredError = err.message;
     console.warn('Metered TURN fetch failed:', err.message);
   }
 
@@ -309,9 +320,15 @@ async function buildIceConfigResponse() {
     turnSource: hasTurn ? 'static-hmac' : 'stun-only',
   };
 
-  if (hasTurn && TURN_HOST.includes('openrelay')) {
+  if (meteredError) {
     payload.turnWarning =
-      'TURN relay not configured — server admin must set METERED_APP_NAME + METERED_SECRET_KEY on Railway (free at metered.ca/tools/openrelay).';
+      `Metered TURN unavailable: ${meteredError} — enable the free 500MB trial in metered.ca dashboard, or set TURN_USERNAME + TURN_CREDENTIAL from Show ICE Servers Array.`;
+  } else if (hasTurn && TURN_HOST.includes('openrelay')) {
+    payload.turnWarning =
+      'TURN relay not configured — set METERED_APP_NAME + METERED_SECRET_KEY on Railway (free at metered.ca/tools/openrelay).';
+  } else if (!hasTurn && METERED_APP_NAME) {
+    payload.turnWarning =
+      'Metered vars set but TURN not loaded — check METERED_APP_NAME (subdomain only, e.g. zetaegis) and plan on metered.ca.';
   } else if (!hasTurn) {
     payload.turnWarning = 'No TURN relay on server — connections may fail across networks.';
   }
@@ -811,7 +828,7 @@ server.listen(PORT, '0.0.0.0', () => {
   if (!TURN_SECRET && !TURN_USERNAME && !METERED_APP_NAME) {
     console.warn('  WARNING: No TURN configured. Set METERED_APP_NAME + METERED_SECRET_KEY (free at metered.ca/tools/openrelay).');
   } else if (METERED_APP_NAME) {
-    console.log(`  TURN relay  : Metered (${METERED_APP_NAME}.metered.live)`);
+    console.log(`  TURN relay  : Metered (${meteredAppSubdomain()}.metered.live)`);
   } else if (TURN_SECRET) {
     console.log(`  TURN relay  : ${TURN_HOST}:${TURN_PORT} (HMAC credentials)`);
   } else {
