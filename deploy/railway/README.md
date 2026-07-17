@@ -84,9 +84,10 @@ curl -s https://YOUR-DOMAIN.up.railway.app/health
 | `NODE_ENV` | `production` |
 | `CORS_ORIGIN` | `https://${{RAILWAY_PUBLIC_DOMAIN}}` (or your custom domain) |
 | `LOG_SECRET` | `openssl rand -hex 32` |
-| `METERED_APP_NAME` | Your Metered subdomain (e.g. `myapp` for `myapp.metered.live`) — **required for TURN on Railway** |
-| `METERED_SECRET_KEY` | From [metered.ca](https://www.metered.ca/tools/openrelay/) → Developers → Secret Key |
-| `METERED_TURN_API_KEY` | Optional alternative to secret key (per-credential API key from dashboard) |
+| `METERED_APP_NAME` | Subdomain only (e.g. `zetaegis`) — full `*.metered.live` also accepted |
+| `METERED_SECRET_KEY` | Developers → Secret Key (needs **Free Trial Global 500MB** on metered.ca) |
+| `METERED_TURN_API_KEY` | Per-credential API key from dashboard (works on free tier) |
+| `TURN_USERNAME` / `TURN_CREDENTIAL` | From dashboard → Show ICE Servers Array (alternative) |
 | `TURN_SECRET` / `TURN_HOST` | Optional self-hosted coturn (Docker Compose deploy) |
 
 `start.sh` auto-sets `CORS_ORIGIN` from `RAILWAY_PUBLIC_DOMAIN` when omitted.
