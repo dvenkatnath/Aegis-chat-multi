@@ -206,9 +206,15 @@
         }
         const incomingFiles = new Map();
         const incomingMessages = new Map();
-        const FILE_CHUNK_SIZE = 384;
+        const fileAesKeyCache = new Map();
+        /* File transfer: 'p2p-v2' = WebRTC bulk (Option A); 'blob-store' = Option B (future) */
+        const FILE_TRANSFER_MODE = 'p2p-v2';
+        const FILE_LEGACY_CHUNK_SIZE = 384; /* CyberKnot WASM limit — legacy small-file path */
+        const FILE_P2P_CHUNK_BYTES = 32768;
+        const FILE_DC_MAX_BUFFERED = 2 * 1024 * 1024;
+        const FILE_P2P_MAX_BYTES = 150 * 1024 * 1024;
         const LARGE_FILE_WARN_BYTES = 10 * 1024 * 1024;
-        const FILE_SEND_CHUNKS_PER_SEC_EST = 80;
+        const FILE_SEND_CHUNKS_PER_SEC_EST = 120;
         /* Must stay under WASM BRIDGE_MAX_PLAIN (880) after JSON envelope overhead */
         const TEXT_CHUNK_SIZE = 512;
         const ENCRYPT_MAX_PLAIN = 880;
@@ -387,7 +393,8 @@
         }
 
         function estimateFileSendEtaSeconds(fileSize) {
-            const totalChunks = Math.max(1, Math.ceil(fileSize / FILE_CHUNK_SIZE));
+            const chunkBytes = FILE_TRANSFER_MODE === 'p2p-v2' ? FILE_P2P_CHUNK_BYTES : FILE_LEGACY_CHUNK_SIZE;
+            const totalChunks = Math.max(1, Math.ceil(fileSize / chunkBytes));
             return totalChunks / FILE_SEND_CHUNKS_PER_SEC_EST;
         }
 
@@ -758,13 +765,17 @@
             return true;
         }
 
-        function flushPendingIncoming(peer) {
+        async function flushPendingIncoming(peer) {
             if (!wasmReady || !peer.sessionKeyReady || !peer.fingerprintVerified || peer.pendingIncoming.length === 0) return;
             const queued = peer.pendingIncoming.splice(0);
             peer.pendingNoticeShown = false;
             for (const envelope of queued) {
                 try {
-                    handleSecureEnvelope(peer, envelope);
+                    if (envelope.type === 'secure-file') {
+                        await handleSecureFileEnvelope(peer, envelope);
+                    } else {
+                        handleSecureEnvelope(peer, envelope);
+                    }
                 } catch (err) {
                     addMessage(`Error receiving message: ${err.message}`, 'system');
                 }
@@ -820,6 +831,22 @@
 
         function bytesToHex(bytes) {
             return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        function hexToBytes(hex) {
+            const bytes = new Uint8Array(hex.length / 2);
+            for (let i = 0; i < bytes.length; i += 1) {
+                bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+            }
+            return bytes;
+        }
+
+        function fileKeyCacheKey(peer, fileId) {
+            return `${peer.connId}:${fileId}`;
+        }
+
+        function clearFileKeyCache() {
+            fileAesKeyCache.clear();
         }
 
         function base64UrlEncode(str) {
@@ -1609,6 +1636,17 @@
             } else if (payload.type === 'file') {
                 addFileMessage(payload.name, payload.size, payload.data);
                 if (inviteRole === 'host') broadcastToOthers(peer.connId, payload);
+            } else if (payload.type === 'file2-start') {
+                incomingFiles.set(payload.id, {
+                    id: payload.id,
+                    name: payload.name,
+                    size: payload.size,
+                    totalChunks: payload.totalChunks,
+                    chunks: new Array(payload.totalChunks),
+                    received: 0,
+                    version: 2
+                });
+                if (inviteRole === 'host') broadcastToOthers(peer.connId, payload);
             } else if (payload.type === 'file-start') {
                 incomingFiles.set(payload.id, {
                     name: payload.name,
@@ -1642,13 +1680,7 @@
             state.chunks[payload.index] = base64ToUint8Array(payload.data);
             state.received += 1;
             if (state.received === state.totalChunks) {
-                const merged = new Uint8Array(state.chunks.reduce((sum, chunk) => sum + chunk.length, 0));
-                let offset = 0;
-                for (const chunk of state.chunks) {
-                    merged.set(chunk, offset);
-                    offset += chunk.length;
-                }
-                addFileMessage(state.name, state.size, uint8ArrayToBase64(merged));
+                finalizeIncomingFile({ ...state, id: payload.id });
                 incomingFiles.delete(payload.id);
             }
         }
@@ -1713,22 +1745,209 @@
         }
 
         function addFileMessage(fileName, fileSize, b64Data) {
+            const blob = new Blob([base64ToUint8Array(b64Data)]);
+            addFileMessageBlob(fileName, fileSize, blob);
+        }
+
+        function addFileMessageBlob(fileName, fileSize, blob) {
             const div = document.createElement('a');
             div.className = 'msg file received';
-            div.textContent = `📁 ${fileName} (${fileSize} bytes) - Click to download`;
-            div.href = `data:application/octet-stream;base64,${b64Data}`;
+            div.textContent = `📁 ${fileName} (${formatBytes(fileSize)}) - Click to download`;
+            div.href = URL.createObjectURL(blob);
             div.download = fileName;
             chatBox.appendChild(div);
             chatBox.scrollTop = chatBox.scrollHeight;
         }
 
         function addFileSentNotice(fileName, fileSize) {
-            addMessage(`File sent: ${fileName} (${fileSize} bytes)`, 'sent');
+            addMessage(`File sent: ${fileName} (${formatBytes(fileSize)})`, 'sent');
         }
 
-        async function sendFileBuffer(fileName, fileSize, bytes, onProgress) {
+        async function waitForDcDrain(dc, maxBuffered = FILE_DC_MAX_BUFFERED) {
+            while (dc.bufferedAmount > maxBuffered) {
+                if (dc.readyState !== 'open') {
+                    throw new Error('P2P channel closed during file transfer.');
+                }
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+        }
+
+        async function deriveFileAesKey(peer, fileId) {
+            const cacheKey = fileKeyCacheKey(peer, fileId);
+            if (fileAesKeyCache.has(cacheKey)) {
+                return fileAesKeyCache.get(cacheKey);
+            }
+            ensurePeerSessionReady(peer);
+            const enc = new TextEncoder();
+            const rawKey = hexToBytes(peer.sessionKeyHex);
+            const hkdfKey = await crypto.subtle.importKey('raw', rawKey, 'HKDF', false, ['deriveKey']);
+            const aesKey = await crypto.subtle.deriveKey(
+                {
+                    name: 'HKDF',
+                    hash: 'SHA-256',
+                    salt: enc.encode(fileId),
+                    info: enc.encode('AegisSecureFile-v2')
+                },
+                hkdfKey,
+                { name: 'AES-GCM', length: 256 },
+                false,
+                ['encrypt', 'decrypt']
+            );
+            fileAesKeyCache.set(cacheKey, aesKey);
+            return aesKey;
+        }
+
+        async function sendSecureFileChunk(peer, fileId, index, plainBytes) {
+            ensurePeerSessionReady(peer);
+            if (!peer.dc || peer.dc.readyState !== 'open') {
+                throw new Error('P2P channel not open.');
+            }
+            const key = await deriveFileAesKey(peer, fileId);
+            const iv = crypto.getRandomValues(new Uint8Array(12));
+            const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plainBytes);
+            await waitForDcDrain(peer.dc);
+            peer.dc.send(JSON.stringify({
+                type: 'secure-file',
+                id: fileId,
+                index,
+                iv: uint8ArrayToBase64(iv),
+                ct: uint8ArrayToBase64(new Uint8Array(ciphertext))
+            }));
+        }
+
+        async function forwardFileChunkToOthers(fromConnId, fileId, index, plainBytes) {
+            for (const [connId, otherPeer] of peers.entries()) {
+                if (connId === fromConnId || !peerCanSend(otherPeer)) continue;
+                try {
+                    await sendSecureFileChunk(otherPeer, fileId, index, plainBytes);
+                } catch (err) {
+                    console.error(`File fan-out to ${otherPeer.name || connId} failed:`, err);
+                }
+            }
+        }
+
+        function finalizeIncomingFile(state) {
+            const merged = new Uint8Array(state.chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+            let offset = 0;
+            for (const chunk of state.chunks) {
+                merged.set(chunk, offset);
+                offset += chunk.length;
+            }
+            addFileMessageBlob(state.name, state.size, new Blob([merged]));
+        }
+
+        function handleFile2Chunk(state, index, bytes) {
+            if (state.chunks[index]) return;
+            state.chunks[index] = bytes;
+            state.received += 1;
+            if (state.received === state.totalChunks) {
+                finalizeIncomingFile(state);
+                incomingFiles.delete(state.id);
+            }
+        }
+
+        async function handleSecureFileEnvelope(peer, envelope) {
+            if (envelope.type !== 'secure-file') {
+                throw new Error('Invalid secure file envelope.');
+            }
+            const state = incomingFiles.get(envelope.id);
+            if (!state || state.version !== 2) {
+                throw new Error('File chunk received without file2-start metadata.');
+            }
+            const key = await deriveFileAesKey(peer, envelope.id);
+            const plain = await crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv: base64ToUint8Array(envelope.iv) },
+                key,
+                base64ToUint8Array(envelope.ct)
+            );
+            const bytes = new Uint8Array(plain);
+            if (inviteRole === 'host') {
+                await forwardFileChunkToOthers(peer.connId, envelope.id, envelope.index, bytes);
+            }
+            handleFile2Chunk(state, envelope.index, bytes);
+        }
+
+        async function streamFileChunks(file, chunkSize, onChunk) {
+            if (typeof file.stream === 'function') {
+                const reader = file.stream().getReader();
+                let carry = new Uint8Array(0);
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        if (carry.length > 0) await onChunk(carry);
+                        break;
+                    }
+                    const combined = new Uint8Array(carry.length + value.length);
+                    combined.set(carry);
+                    combined.set(value, carry.length);
+                    carry = combined;
+                    let offset = 0;
+                    while (offset + chunkSize <= carry.length) {
+                        await onChunk(carry.subarray(offset, offset + chunkSize));
+                        offset += chunkSize;
+                    }
+                    carry = carry.subarray(offset);
+                }
+                return;
+            }
+            const buffer = await file.arrayBuffer();
+            const bytes = new Uint8Array(buffer);
+            for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+                await onChunk(bytes.subarray(offset, offset + chunkSize));
+            }
+        }
+
+        async function sendFileP2Pv2(file, onProgress) {
+            const fileName = file.name;
+            const fileSize = file.size;
+            if (fileSize > FILE_P2P_MAX_BYTES) {
+                throw new Error(`File exceeds ${formatBytes(FILE_P2P_MAX_BYTES)} P2P limit. Option B (encrypted blob store) coming later.`);
+            }
             const id = crypto.randomUUID();
-            const totalChunks = Math.max(1, Math.ceil(bytes.length / FILE_CHUNK_SIZE));
+            const totalChunks = Math.max(1, Math.ceil(fileSize / FILE_P2P_CHUNK_BYTES));
+            const readyPeers = [...peers.values()].filter(peerCanSend);
+            if (readyPeers.length === 0) {
+                throw new Error('No connected peer to send the file to.');
+            }
+
+            for (const peer of readyPeers) {
+                sendSecure(peer, {
+                    type: 'file2-start',
+                    id,
+                    name: fileName,
+                    size: fileSize,
+                    totalChunks,
+                    mode: FILE_TRANSFER_MODE
+                });
+            }
+
+            const startMs = Date.now();
+            let chunkIndex = 0;
+            await streamFileChunks(file, FILE_P2P_CHUNK_BYTES, async (chunk) => {
+                for (const peer of readyPeers) {
+                    await sendSecureFileChunk(peer, id, chunkIndex, chunk);
+                }
+                if (onProgress && (chunkIndex === 0 || chunkIndex % 16 === 0)) {
+                    const elapsedSec = Math.max(0.001, (Date.now() - startMs) / 1000);
+                    const chunksPerSec = chunkIndex > 0 ? chunkIndex / elapsedSec : FILE_SEND_CHUNKS_PER_SEC_EST;
+                    onProgress({
+                        index: chunkIndex + 1,
+                        totalChunks,
+                        etaSeconds: (totalChunks - chunkIndex - 1) / chunksPerSec,
+                    });
+                }
+                chunkIndex += 1;
+            });
+
+            if (onProgress) {
+                onProgress({ index: totalChunks, totalChunks, etaSeconds: 0 });
+            }
+            addFileSentNotice(fileName, fileSize);
+        }
+
+        async function sendFileBufferLegacy(fileName, fileSize, bytes, onProgress) {
+            const id = crypto.randomUUID();
+            const totalChunks = Math.max(1, Math.ceil(bytes.length / FILE_LEGACY_CHUNK_SIZE));
             const readyPeers = [...peers.values()].filter(peerCanSend);
             if (readyPeers.length === 0) {
                 throw new Error('No connected peer to send the file to.');
@@ -1740,8 +1959,8 @@
 
             const startMs = Date.now();
             for (let index = 0; index < totalChunks; index += 1) {
-                const start = index * FILE_CHUNK_SIZE;
-                const chunk = bytes.subarray(start, start + FILE_CHUNK_SIZE);
+                const start = index * FILE_LEGACY_CHUNK_SIZE;
+                const chunk = bytes.subarray(start, start + FILE_LEGACY_CHUNK_SIZE);
                 const chunkPayload = { type: 'file-chunk', id, index, data: uint8ArrayToBase64(chunk) };
                 for (const peer of readyPeers) {
                     sendSecure(peer, chunkPayload);
@@ -1750,11 +1969,10 @@
                 if (onProgress && (index === 0 || index % 200 === 0 || index === totalChunks - 1)) {
                     const elapsedSec = Math.max(0.001, (Date.now() - startMs) / 1000);
                     const chunksPerSec = index > 0 ? index / elapsedSec : FILE_SEND_CHUNKS_PER_SEC_EST;
-                    const remainingChunks = totalChunks - index - 1;
                     onProgress({
                         index: index + 1,
                         totalChunks,
-                        etaSeconds: remainingChunks / chunksPerSec,
+                        etaSeconds: (totalChunks - index - 1) / chunksPerSec,
                     });
                 }
 
@@ -1764,6 +1982,17 @@
             }
 
             addFileSentNotice(fileName, fileSize);
+        }
+
+        async function sendFile(file, onProgress) {
+            if (FILE_TRANSFER_MODE === 'blob-store') {
+                throw new Error('Encrypted blob-store transfer (Option B) is not enabled yet.');
+            }
+            if (FILE_TRANSFER_MODE === 'p2p-v2') {
+                return sendFileP2Pv2(file, onProgress);
+            }
+            const buffer = await file.arrayBuffer();
+            return sendFileBufferLegacy(file.name, file.size, new Uint8Array(buffer), onProgress);
         }
 
         function updateStatusDot() {
@@ -1799,6 +2028,7 @@
             hostEcdhKeyPair = null;
             incomingFiles.clear();
             incomingMessages.clear();
+            clearFileKeyCache();
             keyTransparencyOk = false;
             signalArea.value = '';
             updateSecurityPanel();
@@ -2457,7 +2687,7 @@
                     'system'
                 );
             };
-            dc.onmessage = (event) => {
+            dc.onmessage = async (event) => {
                 try {
                     const envelope = JSON.parse(event.data);
                     if (!wasmReady || !peer.sessionKeyReady || !peer.fingerprintVerified) {
@@ -2469,7 +2699,11 @@
                         markWasmReady();
                         return;
                     }
-                    handleSecureEnvelope(peer, envelope);
+                    if (envelope.type === 'secure-file') {
+                        await handleSecureFileEnvelope(peer, envelope);
+                    } else {
+                        handleSecureEnvelope(peer, envelope);
+                    }
                 } catch (err) {
                     console.error('Failed to process message:', err);
                     addMessage(`Error receiving message: ${err.message}`, 'system');
@@ -2513,29 +2747,21 @@
                     await waitForNextPaint();
                 }
 
-                const reader = new FileReader();
-                reader.onload = async () => {
-                    try {
-                        const onProgress = isLarge
-                            ? ({ index, totalChunks, etaSeconds }) => {
-                                const pct = Math.min(100, Math.floor((index / totalChunks) * 100));
-                                setFileTransferStatus(
-                                    `Sending "${file.name}" (${formatBytes(file.size)})… ${pct}% — ETA ~${formatEta(etaSeconds)}`
-                                );
-                            }
-                            : null;
-                        await sendFileBuffer(file.name, file.size, new Uint8Array(reader.result), onProgress);
-                        clearFileTransferStatus();
-                    } catch (err) {
-                        clearFileTransferStatus();
-                        addMessage(`File send failed: ${err.message}`, 'system');
-                    }
-                };
-                reader.onerror = () => {
+                try {
+                    const onProgress = isLarge
+                        ? ({ index, totalChunks, etaSeconds }) => {
+                            const pct = Math.min(100, Math.floor((index / totalChunks) * 100));
+                            setFileTransferStatus(
+                                `Sending "${file.name}" (${formatBytes(file.size)})… ${pct}% — ETA ~${formatEta(etaSeconds)}`
+                            );
+                        }
+                        : null;
+                    await sendFile(file, onProgress);
                     clearFileTransferStatus();
-                    addMessage('File read failed.', 'system');
-                };
-                reader.readAsArrayBuffer(file);
+                } catch (err) {
+                    clearFileTransferStatus();
+                    addMessage(`File send failed: ${err.message}`, 'system');
+                }
             };
 
             if (isLarge) {
