@@ -26,6 +26,8 @@
         .msg.sent { align-self: flex-end; border-radius: 12px 12px 2px 12px; background: rgba(29, 158, 117, 0.1); border-color: rgba(29, 158, 117, 0.3); }
         .msg.file { border-color: var(--amber); background: rgba(239, 159, 39, 0.1); cursor: pointer; text-decoration: none; color: var(--amber); display: block; }
         .input-area { padding: 15px; background: var(--panel-bg); border-top: 1px solid rgba(255,255,255,0.08); display: flex; gap: 10px; }
+        #file-transfer-banner { display: none; padding: 10px 15px; background: rgba(239, 159, 39, 0.12); border-top: 1px solid rgba(239, 159, 39, 0.35); color: var(--amber); font-size: 0.85rem; line-height: 1.4; }
+        #file-transfer-banner.show { display: block; }
         input[type="text"], input[type="password"] { flex: 1; padding: 12px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: var(--text-main); outline: none; }
         input[type="text"]:focus, input[type="password"]:focus { border-color: var(--teal); }
         button { padding: 12px 20px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.2s; }
@@ -126,6 +128,7 @@
         </aside>
         <div class="chat-area">
             <div id="chat-box"><div class="msg system">Establishing secure proprietary channel…</div></div>
+            <div id="file-transfer-banner" role="status" aria-live="polite"></div>
             <div class="input-area">
                 <input type="text" id="msg-input" placeholder="Type secure message…" disabled>
                 <input type="file" id="file-input" style="display:none;" disabled>
@@ -203,6 +206,8 @@
         const incomingFiles = new Map();
         const incomingMessages = new Map();
         const FILE_CHUNK_SIZE = 384;
+        const LARGE_FILE_WARN_BYTES = 10 * 1024 * 1024;
+        const FILE_SEND_CHUNKS_PER_SEC_EST = 80;
         /* Must stay under WASM BRIDGE_MAX_PLAIN (880) after JSON envelope overhead */
         const TEXT_CHUNK_SIZE = 512;
         const ENCRYPT_MAX_PLAIN = 880;
@@ -217,6 +222,7 @@
         const fileInput = document.getElementById('file-input');
         const sendBtn = document.getElementById('send-btn');
         const fileBtn = document.getElementById('file-btn');
+        const fileTransferBanner = document.getElementById('file-transfer-banner');
         const statusDot = document.getElementById('status-dot');
         const signalArea = document.getElementById('signal-area');
         const roomSecretInput = document.getElementById('room-secret');
@@ -337,6 +343,49 @@
             div.textContent = senderName ? `${senderName}: ${text}` : text;
             chatBox.appendChild(div);
             chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function setFileTransferStatus(text) {
+            fileTransferBanner.textContent = text;
+            fileTransferBanner.classList.add('show');
+        }
+
+        function clearFileTransferStatus() {
+            fileTransferBanner.textContent = '';
+            fileTransferBanner.classList.remove('show');
+        }
+
+        function waitForNextPaint() {
+            return new Promise((resolve) => {
+                requestAnimationFrame(() => requestAnimationFrame(resolve));
+            });
+        }
+
+        function formatBytes(bytes) {
+            if (bytes < 1024) return `${bytes} B`;
+            if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+            return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        }
+
+        function formatEta(totalSeconds) {
+            if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return 'unknown';
+            const secs = Math.max(1, Math.round(totalSeconds));
+            if (secs < 60) return `${secs}s`;
+            const mins = Math.floor(secs / 60);
+            const rem = secs % 60;
+            if (mins < 60) return rem ? `${mins}m ${rem}s` : `${mins}m`;
+            const hrs = Math.floor(mins / 60);
+            const remMins = mins % 60;
+            return remMins ? `${hrs}h ${remMins}m` : `${hrs}h`;
+        }
+
+        function estimateFileSendEtaSeconds(fileSize) {
+            const totalChunks = Math.max(1, Math.ceil(fileSize / FILE_CHUNK_SIZE));
+            return totalChunks / FILE_SEND_CHUNKS_PER_SEC_EST;
+        }
+
+        function yieldToEventLoop() {
+            return new Promise((resolve) => setTimeout(resolve, 0));
         }
 
         function getRoomSecret() {
@@ -1613,7 +1662,7 @@
             addMessage(`File sent: ${fileName} (${fileSize} bytes)`, 'sent');
         }
 
-        function sendFileBuffer(fileName, fileSize, bytes) {
+        async function sendFileBuffer(fileName, fileSize, bytes, onProgress) {
             const id = crypto.randomUUID();
             const totalChunks = Math.max(1, Math.ceil(bytes.length / FILE_CHUNK_SIZE));
             const readyPeers = [...peers.values()].filter(peerCanSend);
@@ -1625,12 +1674,28 @@
                 sendSecure(peer, { type: 'file-start', id, name: fileName, size: fileSize, totalChunks });
             }
 
+            const startMs = Date.now();
             for (let index = 0; index < totalChunks; index += 1) {
                 const start = index * FILE_CHUNK_SIZE;
                 const chunk = bytes.subarray(start, start + FILE_CHUNK_SIZE);
                 const chunkPayload = { type: 'file-chunk', id, index, data: uint8ArrayToBase64(chunk) };
                 for (const peer of readyPeers) {
                     sendSecure(peer, chunkPayload);
+                }
+
+                if (onProgress && (index === 0 || index % 200 === 0 || index === totalChunks - 1)) {
+                    const elapsedSec = Math.max(0.001, (Date.now() - startMs) / 1000);
+                    const chunksPerSec = index > 0 ? index / elapsedSec : FILE_SEND_CHUNKS_PER_SEC_EST;
+                    const remainingChunks = totalChunks - index - 1;
+                    onProgress({
+                        index: index + 1,
+                        totalChunks,
+                        etaSeconds: remainingChunks / chunksPerSec,
+                    });
+                }
+
+                if (index % 50 === 0) {
+                    await yieldToEventLoop();
                 }
             }
 
@@ -2365,16 +2430,48 @@
             const file = e.target.files[0];
             e.target.value = '';
             if (!file) return;
-            const reader = new FileReader();
-            reader.onload = () => {
-                try {
-                    sendFileBuffer(file.name, file.size, new Uint8Array(reader.result));
-                } catch (err) {
-                    addMessage(`File send failed: ${err.message}`, 'system');
+
+            const isLarge = file.size >= LARGE_FILE_WARN_BYTES;
+
+            const readAndSend = async () => {
+                if (isLarge) {
+                    await waitForNextPaint();
                 }
+
+                const reader = new FileReader();
+                reader.onload = async () => {
+                    try {
+                        const onProgress = isLarge
+                            ? ({ index, totalChunks, etaSeconds }) => {
+                                const pct = Math.min(100, Math.floor((index / totalChunks) * 100));
+                                setFileTransferStatus(
+                                    `Sending "${file.name}" (${formatBytes(file.size)})… ${pct}% — ETA ~${formatEta(etaSeconds)}`
+                                );
+                            }
+                            : null;
+                        await sendFileBuffer(file.name, file.size, new Uint8Array(reader.result), onProgress);
+                        clearFileTransferStatus();
+                    } catch (err) {
+                        clearFileTransferStatus();
+                        addMessage(`File send failed: ${err.message}`, 'system');
+                    }
+                };
+                reader.onerror = () => {
+                    clearFileTransferStatus();
+                    addMessage('File read failed.', 'system');
+                };
+                reader.readAsArrayBuffer(file);
             };
-            reader.onerror = () => addMessage('File read failed.', 'system');
-            reader.readAsArrayBuffer(file);
+
+            if (isLarge) {
+                const eta = formatEta(estimateFileSendEtaSeconds(file.size));
+                setFileTransferStatus(
+                    `File "${file.name}" (${formatBytes(file.size)}) is being prepared and sending… ETA ~${eta}`
+                );
+                readAndSend();
+            } else {
+                readAndSend();
+            }
         };
 
         applyInviteFromHash();
