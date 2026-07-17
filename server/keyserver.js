@@ -812,10 +812,17 @@ wss.on('connection', (ws, req) => {
         safeSend(guest.ws, awayMsg);
       }
     } else if (boundRole === 'guest' && boundConnId) {
+      const guest = room.guests.get(boundConnId);
+      const guestName = guest?.name || 'Guest';
       const wasAdmitted = room.admittedConnIds.has(boundConnId);
       room.guests.delete(boundConnId);
       if (wasAdmitted) room.admittedConnIds.delete(boundConnId);
-      safeSend(room.hostWs, JSON.stringify({ type: 'peer-left', connId: boundConnId }));
+      safeSend(room.hostWs, JSON.stringify({
+        type: 'peer-left',
+        connId: boundConnId,
+        name: guestName,
+        wasAdmitted
+      }));
     }
   });
 });

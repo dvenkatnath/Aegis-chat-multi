@@ -197,7 +197,13 @@
                 pendingLocalIce: [],
                 trickleIce: false,
                 iceGatheringDone: false,
-                name: name || null
+                name: name || null,
+                heartbeatTimer: null,
+                iceRecoveryTimer: null,
+                iceRestartCount: 0,
+                lastHeartbeatAck: 0,
+                recoveryFailedNotified: false,
+                leftNoticeSent: false
             };
         }
 
@@ -224,6 +230,10 @@
         const DISPLAY_NAME_MAX_CLIENT = 40; /* matches server DISPLAY_NAME_MAX */
         const TRICKLE_PUBLISH_MS = 1200;    /* send offer/answer after first ICE candidates, not full gather */
         const TURN_TRICKLE_WAIT_MS = 8000;  /* wait for TURN relay candidates before publishing when TURN configured */
+        const HEARTBEAT_INTERVAL_MS = 25000;
+        const HEARTBEAT_TIMEOUT_MS = 75000;
+        const ICE_RESTART_MAX = 5;
+        const ICE_DISCONNECTED_GRACE_MS = 8000;
 
         const chatBox = document.getElementById('chat-box');
         const msgInput = document.getElementById('msg-input');
@@ -460,32 +470,105 @@
             peer.connectWatchdogTimer = setTimeout(async () => {
                 if (!peer.pc || peer.dc?.readyState === 'open') return;
                 const ice = peer.pc.iceConnectionState;
-                addMessage(`Connection slow (${ice}) — retrying ICE with all network paths…`, 'system');
-                if (!peer.iceRestartAttempted) {
-                    peer.iceRestartAttempted = true;
-                    const cfg = await buildRtcConfig();
-                    cfg.iceTransportPolicy = preferTurnRelay() && iceConfigHasTurn(iceConfigCache)
-                        ? 'relay'
-                        : 'all';
-                    try {
-                        peer.pc.setConfiguration(cfg);
-                        if (typeof peer.pc.restartIce === 'function') {
-                            peer.pc.restartIce();
-                        }
-                        flushPendingLocalIce(peer);
-                    } catch (err) {
-                        console.warn('ICE watchdog restart failed:', err);
-                    }
-                    updateSecurityPanel();
-                    return;
-                }
-                addMessage(
-                    'Secure channel timed out. On both tabs: click Reset, hard-refresh (Cmd+Shift+R), host re-admits guest. '
-                    + 'Keep Safari/Chrome in the foreground and disable VPN.',
-                    'system'
-                );
+                addMessage(`Connection slow (${ice}) — retrying…`, 'system');
+                await attemptPeerIceRecovery(peer, `slow connect (${ice})`);
                 updateSecurityPanel();
             }, isSafari() ? 45000 : 35000);
+        }
+
+        function stopPeerHeartbeat(peer) {
+            if (peer.heartbeatTimer) {
+                clearInterval(peer.heartbeatTimer);
+                peer.heartbeatTimer = null;
+            }
+            if (peer.iceRecoveryTimer) {
+                clearTimeout(peer.iceRecoveryTimer);
+                peer.iceRecoveryTimer = null;
+            }
+        }
+
+        function handleHeartbeatMessage(peer, msg) {
+            if (msg.type === 'aegis-ping') {
+                peer.lastHeartbeatAck = Date.now();
+                if (peer.dc?.readyState === 'open') {
+                    try {
+                        peer.dc.send(JSON.stringify({ type: 'aegis-pong', t: msg.t }));
+                    } catch (_) { /* channel closing */ }
+                }
+                return true;
+            }
+            if (msg.type === 'aegis-pong') {
+                peer.lastHeartbeatAck = Date.now();
+                peer.iceRestartCount = 0;
+                peer.recoveryFailedNotified = false;
+                return true;
+            }
+            return false;
+        }
+
+        function startPeerHeartbeat(peer) {
+            stopPeerHeartbeat(peer);
+            peer.lastHeartbeatAck = Date.now();
+            peer.heartbeatTimer = setInterval(() => {
+                tickPeerHeartbeat(peer);
+            }, HEARTBEAT_INTERVAL_MS);
+        }
+
+        async function tickPeerHeartbeat(peer) {
+            if (peer.closing || !peer.pc) return;
+            if (peer.dc?.readyState === 'open') {
+                try {
+                    peer.dc.send(JSON.stringify({ type: 'aegis-ping', t: Date.now() }));
+                } catch (_) { /* ignore */ }
+            }
+            const silentMs = Date.now() - (peer.lastHeartbeatAck || 0);
+            if (silentMs > HEARTBEAT_TIMEOUT_MS) {
+                await attemptPeerIceRecovery(peer, 'idle timeout');
+            }
+        }
+
+        function scheduleIceRecovery(peer, delayMs = ICE_DISCONNECTED_GRACE_MS) {
+            if (peer.closing || peer.iceRecoveryTimer) return;
+            peer.iceRecoveryTimer = setTimeout(async () => {
+                peer.iceRecoveryTimer = null;
+                if (!peer.pc || peer.closing) return;
+                const ice = peer.pc.iceConnectionState;
+                if (ice === 'disconnected' || ice === 'failed') {
+                    await attemptPeerIceRecovery(peer, `ICE ${ice}`);
+                }
+            }, delayMs);
+        }
+
+        async function attemptPeerIceRecovery(peer, reason) {
+            if (peer.closing) return;
+            if (peer.iceRestartCount >= ICE_RESTART_MAX) {
+                if (!peer.recoveryFailedNotified) {
+                    peer.recoveryFailedNotified = true;
+                    addMessage(
+                        `Connection lost (${reason}). Click Reset, hard-refresh, and reconnect.`,
+                        'system'
+                    );
+                }
+                return;
+            }
+            peer.iceRestartCount += 1;
+            peer.iceRestartAttempted = false;
+            addMessage(
+                `Connection interrupted — reconnecting (${peer.iceRestartCount}/${ICE_RESTART_MAX})…`,
+                'system'
+            );
+            const useRelay = preferTurnRelay() && iceConfigHasTurn(iceConfigCache);
+            if (await retryPeerIce(peer, useRelay)) {
+                updateSecurityPanel();
+                return;
+            }
+            if (peer.iceRestartCount >= ICE_RESTART_MAX && !peer.recoveryFailedNotified) {
+                peer.recoveryFailedNotified = true;
+                addMessage(
+                    `Connection lost (${reason}). Click Reset, hard-refresh, and reconnect.`,
+                    'system'
+                );
+            }
         }
 
         function relayTrickleEnabled() {
@@ -1187,48 +1270,47 @@
             pc.onconnectionstatechange = async () => {
                 if (pc.connectionState === 'connected') {
                     peer.iceRestartAttempted = false;
+                    peer.iceRestartCount = 0;
+                    peer.recoveryFailedNotified = false;
+                    peer.lastHeartbeatAck = Date.now();
+                    if (peer.iceRecoveryTimer) {
+                        clearTimeout(peer.iceRecoveryTimer);
+                        peer.iceRecoveryTimer = null;
+                    }
                     await verifyLiveFingerprint(peer, 5, 100);
                     await detectConnectionPath(pc, peer);
                 }
                 if (pc.connectionState === 'disconnected') {
                     peer.connectionPath = 'unknown';
                     updateSecurityPanel();
+                    scheduleIceRecovery(peer);
                 }
                 if (pc.connectionState === 'failed') {
                     peer.connectionPath = 'unknown';
-                    if (!peer.iceRestartAttempted && iceConfigHasTurn(iceConfigCache)) {
-                        peer.iceRestartAttempted = true;
-                        addMessage('Connection failed — retrying via TURN relay…', 'system');
-                        if (await retryPeerIce(peer, preferTurnRelay())) {
-                            updateSecurityPanel();
-                            return;
-                        }
-                    }
-                    addMessage(
-                        preferTurnRelay()
-                            ? 'P2P connection failed after TURN retry. Hard-refresh both tabs (Cmd+Shift+R), disable VPN, and try again on Wi‑Fi (not cellular).'
-                            : 'P2P connection failed. Keep both tabs open, disable VPN, and allow browser local-network access if prompted.',
-                        'system'
-                    );
+                    await attemptPeerIceRecovery(peer, 'connection failed');
                     updateSecurityPanel();
                 }
             };
             pc.oniceconnectionstatechange = async () => {
                 if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
                     peer.iceRestartAttempted = false;
+                    peer.iceRestartCount = 0;
+                    peer.recoveryFailedNotified = false;
+                    peer.lastHeartbeatAck = Date.now();
+                    if (peer.iceRecoveryTimer) {
+                        clearTimeout(peer.iceRecoveryTimer);
+                        peer.iceRecoveryTimer = null;
+                    }
                     await verifyLiveFingerprint(peer, 5, 100);
                     await detectConnectionPath(pc, peer);
                 }
+                if (pc.iceConnectionState === 'disconnected') {
+                    peer.connectionPath = 'unknown';
+                    updateSecurityPanel();
+                    scheduleIceRecovery(peer);
+                }
                 if (pc.iceConnectionState === 'failed') {
-                    if (!peer.iceRestartAttempted && iceConfigHasTurn(iceConfigCache)) {
-                        peer.iceRestartAttempted = true;
-                        addMessage('ICE failed — retrying via TURN relay…', 'system');
-                        if (await retryPeerIce(peer, preferTurnRelay())) return;
-                    }
-                    addMessage(
-                        'ICE connection failed. Hard-refresh both tabs (Cmd+Shift+R). Disable VPN and try Wi‑Fi on both devices.',
-                        'system'
-                    );
+                    await attemptPeerIceRecovery(peer, 'ICE failed');
                 }
             };
         }
@@ -2005,6 +2087,7 @@
             if (!peer) return;
             peer.closing = true;
             stopPeerConnectWatchdog(peer);
+            stopPeerHeartbeat(peer);
             stopFingerprintVerificationPoll(peer);
             if (peer.dc) {
                 try { peer.dc.close(); } catch (_) { /* already closed */ }
@@ -2461,6 +2544,9 @@
                     connectRelay(inviteRole);
                 }
             }
+            for (const peer of peers.values()) {
+                tickPeerHeartbeat(peer);
+            }
         });
 
         async function handleRelayMessage(role, msg) {
@@ -2496,13 +2582,22 @@
                     renderWaitingRoom();
                     break;
 
-                case 'peer-left':
+                case 'peer-left': {
+                    const leavingPeer = peers.get(msg.connId);
+                    const leftName = msg.name || leavingPeer?.name || waitingGuests.get(msg.connId) || 'Guest';
                     waitingGuests.delete(msg.connId);
                     renderWaitingRoom();
-                    /* If this guest had already been admitted and connected,
-                       clean up its live peer connection too. */
-                    if (peers.has(msg.connId)) closePeer(msg.connId);
+                    if (leavingPeer) {
+                        leavingPeer.leftNoticeSent = true;
+                        addMessage(`${leftName} has left.`, 'system');
+                        closePeer(msg.connId);
+                    } else if (msg.wasAdmitted) {
+                        addMessage(`${leftName} has left.`, 'system');
+                    } else {
+                        addMessage(`${leftName} left the waiting room.`, 'system');
+                    }
                     break;
+                }
 
                 case 'admitted':
                     addMessage('Admitted — connecting automatically…', 'system');
@@ -2663,6 +2758,7 @@
                 stopPeerConnectWatchdog(peer);
                 updateStatusDot();
                 addMessage(`Secure P2P channel established${peer.name ? ' with ' + peer.name : ''}.`, 'system');
+                startPeerHeartbeat(peer);
                 startFingerprintVerificationPoll(peer);
                 const verified = await verifyLiveFingerprint(peer);
                 if (!verified && peer.expectedFingerprint) {
@@ -2672,8 +2768,9 @@
                 updateSecurityPanel();
             };
             dc.onclose = () => {
+                stopPeerHeartbeat(peer);
                 updateStatusDot();
-                if (!peer.closing) {
+                if (!peer.closing && !peer.leftNoticeSent) {
                     addMessage(`P2P channel closed${peer.name ? ' with ' + peer.name : ''}.`, 'system');
                 }
                 updateSecurityPanel();
@@ -2690,6 +2787,7 @@
             dc.onmessage = async (event) => {
                 try {
                     const envelope = JSON.parse(event.data);
+                    if (handleHeartbeatMessage(peer, envelope)) return;
                     if (!wasmReady || !peer.sessionKeyReady || !peer.fingerprintVerified) {
                         peer.pendingIncoming.push(envelope);
                         if (!peer.pendingNoticeShown) {
