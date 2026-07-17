@@ -82,7 +82,7 @@ const HOST_ABSENT_TTL_MS = 30 * 60 * 1000;       /* keep room after host WS drop
 const MAX_WAITING_GUESTS = 8;                    /* per room, before admission */
 const MAX_ACTIVE_GUESTS  = 5;                    /* simultaneously admitted, host-hub star topology */
 const WS_MAX_MSG_BYTES   = 64 * 1024;            /* matches express.json limit */
-const WS_RATE_MAX        = 20;                   /* messages per window, per connection */
+const WS_RATE_MAX        = 100;                  /* messages per window (trickle ICE sends many candidates) */
 const WS_RATE_WINDOW_MS  = 10 * 1000;
 const DISPLAY_NAME_MAX   = 40;
 
@@ -619,10 +619,6 @@ wss.on('connection', (ws, req) => {
   let boundConnId    = null; /* only set for guests */
 
   ws.on('message', (raw) => {
-    if (!withinRate(rate)) {
-      return safeSend(ws, JSON.stringify({ type: 'error', message: 'rate limit exceeded' }));
-    }
-
     let msg;
     try {
       msg = JSON.parse(raw.toString());
@@ -631,6 +627,11 @@ wss.on('connection', (ws, req) => {
     }
     if (!msg || typeof msg.type !== 'string') {
       return safeSend(ws, JSON.stringify({ type: 'error', message: 'missing type' }));
+    }
+
+    const rateLimited = msg.type !== 'ice-candidate';
+    if (rateLimited && !withinRate(rate)) {
+      return safeSend(ws, JSON.stringify({ type: 'error', message: 'rate limit exceeded' }));
     }
 
     switch (msg.type) {
@@ -747,6 +748,28 @@ wss.on('connection', (ws, req) => {
           }
         } else if (boundRole === 'guest' && room.admittedConnIds.has(boundConnId)) {
           safeSend(room.hostWs, JSON.stringify({ type: 'signal', connId: boundConnId, payload: msg.payload }));
+        }
+        break;
+      }
+
+      case 'ice-candidate': {
+        const room = rooms.get(boundInviteId);
+        if (!room) return;
+        if (boundRole === 'host') {
+          const targetId = msg.connId;
+          const guest = targetId ? room.guests.get(targetId) : null;
+          if (guest && room.admittedConnIds.has(targetId)) {
+            safeSend(guest.ws, JSON.stringify({
+              type: 'ice-candidate',
+              payload: msg.payload ?? null
+            }));
+          }
+        } else if (boundRole === 'guest' && room.admittedConnIds.has(boundConnId)) {
+          safeSend(room.hostWs, JSON.stringify({
+            type: 'ice-candidate',
+            connId: boundConnId,
+            payload: msg.payload ?? null
+          }));
         }
         break;
       }

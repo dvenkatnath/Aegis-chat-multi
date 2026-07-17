@@ -190,6 +190,9 @@
                 iceRestartAttempted: false,
                 connectWatchdogTimer: null,
                 connectStatusTimer: null,
+                remoteIceQueue: [],
+                trickleIce: false,
+                iceGatheringDone: false,
                 name: name || null
             };
         }
@@ -207,6 +210,7 @@
         const MIN_ROOM_SECRET_LEN = 32;
         const INVITE_TTL_MS = 24 * 60 * 60 * 1000;
         const DISPLAY_NAME_MAX_CLIENT = 40; /* matches server DISPLAY_NAME_MAX */
+        const TRICKLE_PUBLISH_MS = 1200;    /* send offer/answer after first ICE candidates, not full gather */
 
         const chatBox = document.getElementById('chat-box');
         const msgInput = document.getElementById('msg-input');
@@ -284,7 +288,7 @@
             return {
                 iceServers: [{ urls: [...stunUrls] }, ...turnServers],
                 iceTransportPolicy,
-                iceCandidatePoolSize: turnServers.length > 0 ? 10 : 0,
+                iceCandidatePoolSize: turnServers.length > 0 ? 16 : 0,
                 bundlePolicy: 'max-bundle',
                 rtcpMuxPolicy: 'require'
             };
@@ -415,7 +419,74 @@
                     'system'
                 );
                 updateSecurityPanel();
-            }, 45000);
+            }, 35000);
+        }
+
+        function relayTrickleEnabled() {
+            return relayWs && relayWs.readyState === WebSocket.OPEN;
+        }
+
+        function sendRelayIceCandidate(peer, candidateInit) {
+            if (!relayTrickleEnabled()) return;
+            const body = { type: 'ice-candidate', payload: candidateInit };
+            if (inviteRole === 'host') {
+                body.connId = peer.connId;
+            }
+            relayWs.send(JSON.stringify(body));
+        }
+
+        async function addRemoteIceCandidate(peer, candidateInit) {
+            if (!peer.pc || !candidateInit) return;
+            if (!peer.pc.remoteDescription) {
+                peer.remoteIceQueue.push(candidateInit);
+                return;
+            }
+            try {
+                await peer.pc.addIceCandidate(candidateInit);
+            } catch (err) {
+                console.warn('addIceCandidate failed:', err);
+            }
+        }
+
+        async function flushRemoteIceQueue(peer) {
+            if (!peer.remoteIceQueue?.length) return;
+            const queued = peer.remoteIceQueue.splice(0);
+            for (const candidateInit of queued) {
+                await addRemoteIceCandidate(peer, candidateInit);
+            }
+        }
+
+        function waitForEarlyIcePublish(pc, maxMs = TRICKLE_PUBLISH_MS) {
+            if (pc.iceGatheringState === 'complete') {
+                return Promise.resolve();
+            }
+            return new Promise((resolve) => {
+                const done = () => {
+                    pc.removeEventListener('icecandidate', onCandidate);
+                    clearTimeout(timer);
+                    resolve();
+                };
+                const onCandidate = (event) => {
+                    if (event.candidate || pc.iceGatheringState === 'complete') {
+                        done();
+                    }
+                };
+                pc.addEventListener('icecandidate', onCandidate);
+                const timer = setTimeout(done, maxMs);
+            });
+        }
+
+        async function ensureSignalPublished(peer, label) {
+            if (peer.signalPublished) return peer.publishedSignal;
+            if (peer.trickleIce) {
+                await waitForEarlyIcePublish(peer.pc);
+            } else {
+                await waitForIceGatheringComplete(peer.pc, isMobileSafari() ? 20000 : 10000);
+            }
+            if (!peer.signalPublished) {
+                await publishLocalSignal(peer, label);
+            }
+            return peer.publishedSignal;
         }
 
         function getSendBlockers() {
@@ -1705,9 +1776,18 @@
         }
 
         function bindIceCandidateHandler(peer) {
+            peer.remoteIceQueue = peer.remoteIceQueue || [];
             peer.pc.onicecandidate = async (event) => {
-                if (event.candidate === null && peer.pc.localDescription && !peer.signalPublished) {
-                    await publishLocalSignal(peer, peer.pc.localDescription.type === 'offer' ? 'Offer' : 'Answer');
+                if (event.candidate) {
+                    if (peer.trickleIce && peer.signalPublished) {
+                        sendRelayIceCandidate(peer, event.candidate.toJSON());
+                    }
+                    return;
+                }
+                peer.iceGatheringDone = true;
+                if (!peer.signalPublished && peer.pc.localDescription) {
+                    const label = peer.pc.localDescription.type === 'offer' ? 'Offer' : 'Answer';
+                    await publishLocalSignal(peer, label);
                 }
             };
         }
@@ -1773,6 +1853,7 @@
             }
 
             peer.pc = new RTCPeerConnection(await buildRtcConfig());
+            peer.trickleIce = relayTrickleEnabled();
             bindConnectionSecurityHandlers(peer.pc, peer);
             peer.dc = peer.pc.createDataChannel('aegis-secure', { ordered: true });
             setupDataChannel(peer, connId);
@@ -1785,12 +1866,9 @@
 
             const offer = await peer.pc.createOffer();
             await peer.pc.setLocalDescription(offer);
-            addMessage(`Connecting${peer.name ? ' to ' + peer.name : ''} — gathering network info for Offer JSON…`, 'system');
+            addMessage(`Connecting${peer.name ? ' to ' + peer.name : ''} — establishing secure channel…`, 'system');
 
-            await waitForIceGatheringAndRelay(peer.pc);
-            if (!peer.signalPublished) {
-                await publishLocalSignal(peer, 'Offer');
-            }
+            await ensureSignalPublished(peer, 'Offer');
             startPeerConnectWatchdog(peer);
             updateSecurityPanel();
             return peer.publishedSignal;
@@ -1848,10 +1926,13 @@
                 peer.isInitiator = false;
                 peer.ecdhKeyPair = await generateEcdhKeyPair();
                 peer.pc = new RTCPeerConnection(await buildRtcConfig());
+                peer.trickleIce = relayTrickleEnabled();
                 bindConnectionSecurityHandlers(peer.pc, peer);
                 peer.pc.ondatachannel = (event) => setupDataChannel(peer, peer.connId, event.channel);
 
+                bindIceCandidateHandler(peer);
                 await peer.pc.setRemoteDescription(signalData);
+                await flushRemoteIceQueue(peer);
                 await establishSessionKey(peer, aegis.pubKey);
                 const remoteFp = readNegotiatedRemoteFingerprint(peer.pc);
                 if (remoteFp) peer.expectedFingerprint = remoteFp;
@@ -1862,7 +1943,6 @@
                     updateSecurityPanel();
                 }
 
-                bindIceCandidateHandler(peer);
                 peer.signalPublished = false;
                 signalArea.value = '';
                 const answer = await peer.pc.createAnswer();
@@ -1873,11 +1953,8 @@
                 } catch (err) {
                     addMessage(`Guest key registration: ${err.message}`, 'system');
                 }
-                addMessage('Creating Answer JSON…', 'system');
-                await waitForIceGatheringAndRelay(peer.pc);
-                if (!peer.signalPublished) {
-                    await publishLocalSignal(peer, 'Answer');
-                }
+                addMessage('Creating Answer…', 'system');
+                await ensureSignalPublished(peer, 'Answer');
                 startPeerConnectWatchdog(peer);
                 updateSecurityPanel();
                 return 'offer';
@@ -1895,6 +1972,7 @@
                     throw new Error(`Cannot apply answer while signaling state is "${peer.pc.signalingState}". Click Reset and start over.`);
                 }
                 await peer.pc.setRemoteDescription(signalData);
+                await flushRemoteIceQueue(peer);
                 await establishSessionKey(peer, aegis.pubKey);
                 const remoteFp = readNegotiatedRemoteFingerprint(peer.pc);
                 if (remoteFp) peer.expectedFingerprint = remoteFp;
@@ -2019,6 +2097,8 @@
             switch (msg.type) {
                 case 'registered':
                     addMessage('Waiting room open — guests who open your invite link will appear here.', 'system');
+                    preloadIceConfig();
+                    loadIceConfig(true).catch(() => {});
                     break;
 
                 case 'joined': {
@@ -2097,6 +2177,22 @@
                     } catch (err) {
                         console.error('Automated signaling failed:', err);
                         addMessage(`Automated signaling error: ${err.message}`, 'system');
+                    }
+                    break;
+
+                case 'ice-candidate':
+                    try {
+                        let icePeer;
+                        if (role === 'guest') {
+                            icePeer = peers.get(HOST_PEER_KEY);
+                        } else {
+                            icePeer = peers.get(msg.connId);
+                        }
+                        if (!icePeer || msg.payload == null) break;
+                        const init = typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload;
+                        await addRemoteIceCandidate(icePeer, init);
+                    } catch (err) {
+                        console.warn('ICE candidate relay failed:', err);
                     }
                     break;
 

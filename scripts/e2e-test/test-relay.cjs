@@ -117,6 +117,27 @@ async function main() {
     ok(sig2.type === 'signal' && sig2.connId === connId && sig2.payload === fakeAnswer,
       'host receives guest\'s answer tagged with the correct connId, payload untouched');
 
+    /* ---- Test 4b: trickle ICE candidate forwarding ---- */
+    let iceReceived = null;
+    const icePromise = new Promise((resolve) => {
+      const onIce = (data) => {
+        const m = JSON.parse(data.toString());
+        if (m.type === 'ice-candidate') {
+          iceReceived = m;
+          guestWs.off('message', onIce);
+          resolve();
+        }
+      };
+      guestWs.on('message', onIce);
+    });
+    hostWs.send(JSON.stringify({
+      type: 'ice-candidate',
+      connId,
+      payload: { candidate: 'candidate:0 1 udp 2130706431 10.0.0.1 9 typ host', sdpMid: '0', sdpMLineIndex: 0 }
+    }));
+    await Promise.race([icePromise, wait(500)]);
+    ok(iceReceived && iceReceived.payload && iceReceived.payload.candidate, 'admitted guest receives trickle ICE from host');
+
     /* ---- Test 5: malformed inviteId rejected ---- */
     const badWs = new WebSocket(base);
     await new Promise((res) => badWs.once('open', res));
@@ -133,7 +154,7 @@ async function main() {
       const m = JSON.parse(data.toString());
       if (m.type === 'error' && /rate limit/i.test(m.message)) sawRateLimitError = true;
     });
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 120; i++) {
       floodWs.send(JSON.stringify({ type: 'join', inviteId: validInviteId, name: `flood${i}` }));
     }
     await wait(400);
